@@ -349,3 +349,87 @@ def test_server_refuses_to_start_over_regular_file(base, db, tmp_path):
     assert r.returncode != 0
     assert "Refusing to start" in r.stderr and "not a socket" in r.stderr
     assert target.read_text() == "precious"
+
+
+# ---- lock file: never overwrite a file that is not ours --------------------
+
+from server import LOCK_MAGIC, LOCK_MAX_BYTES  # noqa: E402
+
+
+@pytest.mark.parametrize("content", [
+    b"my notes\n",                          # Codex's case: an unrelated text file
+    b"12 34 56\n",                          # looks like a record, but no magic line
+    b"\x00\xffbinary\x01",                  # binary
+    LOCK_MAGIC + b"1 2 3\nextra line\n",    # magic, then more than one record line
+    LOCK_MAGIC + b"not numbers\n",          # magic, then non-record text
+    LOCK_MAGIC + b"0" * LOCK_MAX_BYTES,     # magic prefix on an oversized file
+    b" " + LOCK_MAGIC,                      # magic not at the start
+])
+def test_unrecognised_lock_file_refused_and_byte_identical(base, content):
+    lock = base / "admin.sock.lock"
+    lock.write_bytes(content)
+    os.chmod(lock, 0o640)
+    before = os.stat(lock)
+    with pytest.raises(AdminSocketError, match="not a wa-connector lock file"):
+        bind_admin_socket(base / "admin.sock")
+    after = os.stat(lock)
+    assert lock.read_bytes() == content
+    assert (after.st_size, after.st_mtime_ns, stat.S_IMODE(after.st_mode)) == \
+           (before.st_size, before.st_mtime_ns, 0o640)
+    assert not (base / "admin.sock").exists()
+
+
+def test_unrecognised_lock_file_refused_even_without_socket_dir_prepared(base):
+    d = base / "fresh"
+    d.mkdir(mode=0o700)
+    (d / "admin.sock.lock").write_text("unrelated")
+    with pytest.raises(AdminSocketError):
+        bind_admin_socket(d / "admin.sock")
+    assert (d / "admin.sock.lock").read_text() == "unrelated"
+
+
+def test_new_lock_file_format(base):
+    a = bind_admin_socket(base / "admin.sock")
+    try:
+        lock = base / "admin.sock.lock"
+        data = lock.read_bytes()
+        assert data.startswith(LOCK_MAGIC)
+        assert tuple(int(x) for x in data[len(LOCK_MAGIC):].split()) == a.identity
+        assert mode(lock) == 0o600
+    finally:
+        a.close()
+
+
+@pytest.mark.parametrize("content", [b"", LOCK_MAGIC])
+def test_empty_or_magic_only_lock_file_reused(base, content):
+    # Left by a crash right after creating the lock file: safe to reuse.
+    lock = base / "admin.sock.lock"
+    lock.write_bytes(content)
+    a = bind_admin_socket(base / "admin.sock")
+    a.close()
+    assert lock.read_bytes().startswith(LOCK_MAGIC)
+
+
+def test_own_lock_file_reused_across_restarts(base):
+    path = base / "admin.sock"
+    first = bind_admin_socket(path)
+    first.close()                      # crash: socket file and lock file left behind
+    second = bind_admin_socket(path)   # recognised as ours, stale socket replaced
+    try:
+        assert second.identity != first.identity
+    finally:
+        second.close()
+
+
+def test_server_refuses_to_start_over_unrelated_lock_file(base, db, tmp_path):
+    lock = base / "admin.sock.lock"
+    lock.write_text("precious notes\n")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    env = {**os.environ, "WA_CONFIG": str(tmp_path / "none"), "WA_DB_PATH": str(db),
+           "MCP_AUTH_TOKEN": "z" * 43, "MCP_PORT": str(port), "MCP_ADMIN_SOCKET": str(base / "admin.sock")}
+    r = subprocess.run([sys.executable, str(SERVER), "--transport", "http"], env=env,
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode != 0 and "not a wa-connector lock file" in r.stderr
+    assert lock.read_text() == "precious notes\n"

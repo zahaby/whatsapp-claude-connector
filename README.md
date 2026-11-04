@@ -89,7 +89,7 @@ Once the remote connector works you can remove the local Desktop entry so tools 
 cd connector && uv run --group dev pytest -q
 ```
 
-80 tests, four files:
+93 tests, four files:
 
 * `test_server.py`: send tool absent by default; two-step send (no send on first call, invented / reused /
   expired / mismatched proposals rejected); chat-name resolution; newest messages chosen by real UTC time across
@@ -97,7 +97,8 @@ cd connector && uv run --group dev pytest -q
 * `test_admin_socket.py`: the local socket never deletes or re-permissions anything it didn't create. Regular
   files, symlinks, directories and any socket the connector didn't record are refused. A socket is replaced only
   when no connector holds its lock (`admin.sock.lock`, released by the kernel even on SIGKILL) and it is the exact
-  socket the previous connector recorded. Busy live sockets (full backlog, which looks "refused" on macOS) are
+  socket the previous connector recorded. An existing lock file is reused only if it is in the connector's own
+  format (`wa-connector-admin-lock v1` header, or empty); any other file there is refused byte-for-byte untouched. Busy live sockets (full backlog, which looks "refused" on macOS) are
   never deleted; existing directories keep their mode (group/world-writable ones are refused); shutdown removes only
   the exact socket this process bound.
 * `test_http.py`: the real server process with the MCP client: no token → 404, token URL → tools and transcript,

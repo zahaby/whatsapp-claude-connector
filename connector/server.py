@@ -679,17 +679,56 @@ def _prepare_admin_dir(directory: Path) -> None:
             "Use a private directory, e.g. leave MCP_ADMIN_SOCKET unset.")
 
 
-def _open_lock(lock_path: Path) -> int:
-    """Open (creating 0600) the lock file next to the socket and take an
-    exclusive, non-blocking flock. The kernel drops the lock when the
-    process exits for any reason, including SIGKILL, so "lock is free"
-    reliably means "no connector is running on this socket"."""
-    import fcntl
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+LOCK_MAGIC = b"wa-connector-admin-lock v1\n"
+LOCK_MAX_BYTES = 4096
+
+
+def _lock_content_is_ours(fd: int) -> bool:
+    """An existing lock file may be reused only if it is empty (created but
+    never written, e.g. a crash right after creation) or is exactly in our
+    format: the magic line, then optionally one record line. Anything else
+    belongs to someone else and must not be truncated."""
+    size = os.fstat(fd).st_size
+    if size == 0:
+        return True
+    if size > LOCK_MAX_BYTES:
+        return False
+    os.lseek(fd, 0, os.SEEK_SET)
+    data = os.read(fd, LOCK_MAX_BYTES + 1)
+    if not data.startswith(LOCK_MAGIC):
+        return False
+    rest = data[len(LOCK_MAGIC):]
     try:
-        fd = os.open(lock_path, flags, 0o600)
-    except OSError as e:  # O_NOFOLLOW on a symlink -> ELOOP
-        raise AdminSocketError(f"cannot open lock file {lock_path} safely ({e}); refusing")
+        text = rest.decode("ascii")
+    except UnicodeDecodeError:
+        return False
+    lines = text.splitlines()
+    return len(lines) <= 1 and all(ch in "0123456789 \n" for ch in text)
+
+
+def _open_lock(lock_path: Path) -> int:
+    """Open the lock file next to the socket and take an exclusive,
+    non-blocking flock. The kernel drops the lock when the process exits for
+    any reason, including SIGKILL, so "lock is free" reliably means "no
+    connector is running on this socket".
+
+    A new file is created with O_EXCL (so we know it is ours) and gets the
+    magic line at once. An existing file is reused only if its content is in
+    our format; otherwise startup is refused and the file is left untouched.
+    Nothing is written before that check."""
+    import fcntl
+    nofollow, cloexec = getattr(os, "O_NOFOLLOW", 0), getattr(os, "O_CLOEXEC", 0)
+    created = True
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow | cloexec, 0o600)
+    except FileExistsError:
+        created = False
+        try:
+            fd = os.open(lock_path, os.O_RDWR | nofollow | cloexec)  # no O_CREAT, no O_TRUNC
+        except OSError as e:  # O_NOFOLLOW on a symlink -> ELOOP
+            raise AdminSocketError(f"cannot open lock file {lock_path} safely ({e}); refusing")
+    except OSError as e:
+        raise AdminSocketError(f"cannot create lock file {lock_path} ({e}); refusing")
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
@@ -699,6 +738,13 @@ def _open_lock(lock_path: Path) -> int:
         except BlockingIOError:
             raise AdminSocketError(f"another connector is running on {lock_path.with_suffix('')} "
                                    "(its lock is held); refusing to start a second one")
+        if created:
+            os.write(fd, LOCK_MAGIC)
+            os.fsync(fd)
+        elif not _lock_content_is_ours(fd):
+            raise AdminSocketError(
+                f"{lock_path} exists but is not a wa-connector lock file; refusing to overwrite it. "
+                "Move it away or set MCP_ADMIN_SOCKET to another path.")
         return fd
     except BaseException:
         os.close(fd)
@@ -706,19 +752,28 @@ def _open_lock(lock_path: Path) -> int:
 
 
 def _read_record(fd: int) -> Optional[tuple[int, int, int]]:
+    """The recorded socket identity, or None if there is none (new file,
+    empty file, or a record cut short by a crash)."""
     os.lseek(fd, 0, os.SEEK_SET)
-    raw = os.read(fd, 256).decode("ascii", "replace").split()
+    data = os.read(fd, LOCK_MAX_BYTES)
+    if not data.startswith(LOCK_MAGIC):
+        return None
+    parts = data[len(LOCK_MAGIC):].split()
+    if len(parts) != 3:
+        return None
     try:
-        dev, ino, ctime = (int(x) for x in raw)
-        return dev, ino, ctime
+        dev, ino, ctime = (int(x) for x in parts)
     except ValueError:
         return None
+    return dev, ino, ctime
 
 
 def _write_record(fd: int, identity: tuple[int, int, int]) -> None:
+    """Only ever called on a file that passed _open_lock's ownership check."""
+    payload = LOCK_MAGIC + (" ".join(str(x) for x in identity) + "\n").encode()
     os.ftruncate(fd, 0)
     os.lseek(fd, 0, os.SEEK_SET)
-    os.write(fd, (" ".join(str(x) for x in identity) + "\n").encode())
+    os.write(fd, payload)
     os.fsync(fd)
 
 
