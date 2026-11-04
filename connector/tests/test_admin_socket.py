@@ -218,7 +218,7 @@ def test_lock_file_directory_refused(base):
         bind_admin_socket(base / "admin.sock")
 
 
-@pytest.mark.skipif(os.geteuid() != 0, reason="needs root to create another user's file")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: -1)() != 0, reason="needs root to create another user's file")
 def test_other_users_socket_is_refused(base):
     path = base / "admin.sock"
     stale_socket(path)
