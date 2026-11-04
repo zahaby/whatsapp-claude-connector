@@ -476,6 +476,23 @@ WhatsApp access for summarising family chats.
 """
 
 
+def offload(fn):
+    """Run a blocking tool (database reads, the WhatsApp bridge) in a worker
+    thread. The MCP library runs plain (non-async) tools directly on the
+    event loop, so a slow call froze the whole server: no health checks, no
+    new TLS handshakes from the tunnel (which then answers "Bad Gateway").
+    functools.wraps keeps the name, docstring and signature the tool schema
+    is built from."""
+    import functools
+
+    import anyio
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+    return wrapper
+
+
 def build_server(cfg: Config, store: Optional[Store] = None):
     from mcp.server.fastmcp import FastMCP
     from mcp.server.transport_security import TransportSecuritySettings
@@ -502,6 +519,7 @@ def build_server(cfg: Config, store: Optional[Store] = None):
     )
 
     @mcp.tool()
+    @offload
     def list_chats(query: Optional[str] = None, limit: int = 20) -> list[dict[str, Any]]:
         """List WhatsApp chats, most recently active first.
 
@@ -516,6 +534,7 @@ def build_server(cfg: Config, store: Optional[Store] = None):
         return chats[: max(1, min(limit, 100))]
 
     @mcp.tool()
+    @offload
     def get_chat_transcript(chat: str, days: int = 7, max_messages: int = 400) -> str:
         """Get the recent messages of one chat as a plain-text transcript,
         ready to summarise. Use this for "summarise the <name> chat".
@@ -539,6 +558,7 @@ def build_server(cfg: Config, store: Optional[Store] = None):
         return format_transcript(match, msgs[-max_messages:], days, truncated, unreadable)
 
     @mcp.tool()
+    @offload
     def search_messages(query: str, chat: Optional[str] = None, days: int = 30, limit: int = 50) -> str:
         """Search message text, optionally within one chat.
 
@@ -565,6 +585,7 @@ def build_server(cfg: Config, store: Optional[Store] = None):
         return "\n".join(lines)
 
     @mcp.tool()
+    @offload
     def sending_status() -> str:
         """Report whether sending WhatsApp messages is enabled on this connector."""
         if cfg.allow_send:
@@ -576,6 +597,7 @@ def build_server(cfg: Config, store: Optional[Store] = None):
 
     if cfg.autopost:
         @mcp.tool()
+        @offload
         def autopost_status() -> str:
             """Whether the separate daily-summary connector is switched on, and
             which group it posts to. Read-only."""
@@ -584,9 +606,8 @@ def build_server(cfg: Config, store: Optional[Store] = None):
                     f"switch it off with {OPS}daily-summary{OPS_EXT} off")
 
     if cfg.allow_send:
-        import requests
-
         @mcp.tool()
+        @offload
         def send_message(chat: str, message: str, proposal_id: Optional[str] = None) -> str:
             """Send a WhatsApp text message, in two steps.
 
@@ -618,14 +639,15 @@ def build_server(cfg: Config, store: Optional[Store] = None):
             error = proposals.redeem(proposal_id, match["jid"], message)
             if error:
                 return f"NOT SENT: {error} Start again without proposal_id."
-            r = requests.post(
-                f"{cfg.bridge_url}/send",
-                json={"recipient": match["jid"], "message": message},
-                timeout=20,
-            )
-            ok = r.ok and r.json().get("success", False)
-            log.info("send_message to=%s ok=%s", match["jid"], ok)  # no message body in logs
-            return f"Sent to {match['name']}." if ok else f"Send failed: HTTP {r.status_code} {r.text[:200]}"
+            import daily
+            outcome, detail = daily.bridge_sender(cfg.bridge_url)(match["jid"], message)
+            log.info("send_message to=%s outcome=%s", match["jid"], outcome)  # no message body in logs
+            if outcome == "sent":
+                return f"Sent to {match['name']}."
+            if outcome == "unknown":
+                return (f"UNCERTAIN: {detail}. The message may still arrive in '{match['name']}'. Do not "
+                        "send it again; ask the user to check the chat first.")
+            return f"NOT SENT: {detail}."
 
     return mcp
 

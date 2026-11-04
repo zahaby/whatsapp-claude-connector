@@ -34,7 +34,7 @@ import logging
 import os
 import stat
 import sys
-import threading
+import anyio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -78,15 +78,23 @@ class DailyState:
     def __init__(self, directory: Path):
         self.path = directory / "daily-summary.json"
 
-    def last_post(self) -> Optional[datetime]:
+    def last(self) -> tuple[Optional[datetime], str]:
+        """(time of the last post attempt that counts, its outcome): "sent",
+        or "unknown" when the bridge was handed the message but did not
+        confirm in time (it may have been delivered)."""
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             ts = datetime.fromisoformat(data["last_post_utc"])
-            return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-        except (FileNotFoundError, KeyError, ValueError, TypeError, json.JSONDecodeError):
-            return None
+            outcome = data.get("outcome", "sent")
+            return (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)), (
+                outcome if outcome in ("sent", "unknown") else "sent")
+        except (FileNotFoundError, KeyError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+            return None, ""
 
-    def record(self, when: datetime, chat_jid: str) -> None:
+    def last_post(self) -> Optional[datetime]:
+        return self.last()[0]
+
+    def record(self, when: datetime, chat_jid: str, outcome: str = "sent") -> None:
         d = self.path.parent
         if not d.exists():
             d.mkdir(parents=True)
@@ -94,7 +102,7 @@ class DailyState:
                 os.chmod(d, 0o700)
         tmp = self.path.with_name(self.path.name + f".tmp{os.getpid()}")
         tmp.write_text(json.dumps({"last_post_utc": when.astimezone(timezone.utc).isoformat(),
-                                   "chat": chat_jid}), encoding="utf-8")
+                                   "chat": chat_jid, "outcome": outcome}), encoding="utf-8")
         if not IS_WINDOWS:
             os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
         os.replace(tmp, self.path)
@@ -123,18 +131,37 @@ def config_problem(cfg) -> Optional[str]:
     return None
 
 
-def bridge_sender(bridge_url: str) -> Callable[[str, str], tuple[bool, str]]:
-    def send(jid: str, text: str) -> tuple[bool, str]:
+SEND_TIMEOUT_S = 75   # a first send to a large group can be slow; stays under Cloudflare's 100 s
+
+
+def bridge_sender(bridge_url: str, timeout: float = SEND_TIMEOUT_S) -> Callable[[str, str], tuple[str, str]]:
+    """Returns send(jid, text) -> (outcome, detail), outcome one of:
+      "sent"     the bridge confirmed delivery to WhatsApp
+      "failed"   definitely not sent (bridge not running, or it reported an error)
+      "unknown"  the bridge got the message but did not answer in time: it may
+                 have been delivered, so it must not simply be retried."""
+    def send(jid: str, text: str) -> tuple[str, str]:
         import requests
+        import urllib3
         try:
-            r = requests.post(f"{bridge_url}/send", json={"recipient": jid, "message": text}, timeout=20)
+            r = requests.post(f"{bridge_url}/send", json={"recipient": jid, "message": text},
+                              timeout=(5, timeout))
+        except requests.ConnectTimeout:
+            return "failed", "the WhatsApp bridge is not reachable (is it running?)"
+        except requests.Timeout:            # connected and sent, no answer in time
+            return "unknown", "the WhatsApp bridge did not confirm in time"
+        except requests.ConnectionError as e:
+            reason = getattr(e.args[0], "reason", None) if e.args else None
+            if isinstance(reason, urllib3.exceptions.NewConnectionError):   # refused: nothing was sent
+                return "failed", "the WhatsApp bridge is not reachable (is it running?)"
+            return "unknown", "the connection to the WhatsApp bridge broke after sending"
         except requests.RequestException as e:
-            return False, f"bridge not reachable: {e.__class__.__name__}"
+            return "unknown", f"the connection to the WhatsApp bridge broke ({e.__class__.__name__})"
         try:
             ok = r.ok and bool(r.json().get("success", False))
         except ValueError:
             ok = False
-        return ok, ("sent" if ok else f"bridge answered HTTP {r.status_code}")
+        return ("sent", "sent") if ok else ("failed", f"the WhatsApp bridge reported an error (HTTP {r.status_code})")
     return send
 
 
@@ -157,7 +184,7 @@ def build_daily_server(cfg, store, state: DailyState,
     send = send or bridge_sender(cfg.bridge_url)
     jid = cfg.autopost_chat
     interval = timedelta(hours=cfg.autopost_min_interval_h)
-    lock = threading.Lock()
+    lock = anyio.Lock()
 
     allowed_hosts = ["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*"]
     if cfg.public_hostname:
@@ -179,7 +206,7 @@ def build_daily_server(cfg, store, state: DailyState,
         return jid
 
     @mcp.tool()
-    def get_group_transcript(hours: int = 24) -> str:
+    async def get_group_transcript(hours: int = 24) -> str:
         """Messages from the configured WhatsApp group in the last `hours`
         hours (default 24, max 48), oldest first. This is the only chat this
         connector can read.
@@ -190,10 +217,13 @@ def build_daily_server(cfg, store, state: DailyState,
         hours = max(1, min(int(hours), 48))
         end = clock()
         start = end - timedelta(hours=hours)
-        msgs, unreadable = store.messages(chat_jid=jid, since=start, limit=MAX_TRANSCRIPT_MESSAGES + 1)
+        # Database reads off the event loop: the server keeps answering meanwhile.
+        msgs, unreadable = await anyio.to_thread.run_sync(
+            lambda: store.messages(chat_jid=jid, since=start, limit=MAX_TRANSCRIPT_MESSAGES + 1))
+        name = await anyio.to_thread.run_sync(group_name)
         truncated = len(msgs) > MAX_TRANSCRIPT_MESSAGES
         msgs = msgs[-MAX_TRANSCRIPT_MESSAGES:]
-        head = [f"Group: {group_name()}",
+        head = [f"Group: {name}",
                 f"Window: {start.astimezone():%a %d %b %H:%M} to {end.astimezone():%a %d %b %H:%M} "
                 f"(computer's local time); {len(msgs)} message(s)"
                 + (" - older messages omitted" if truncated else ""),
@@ -204,7 +234,7 @@ def build_daily_server(cfg, store, state: DailyState,
         return "\n".join(head + ([_line(m) for m in msgs] or ["(no messages in this window)"]))
 
     @mcp.tool()
-    def post_daily_summary(summary: str) -> str:
+    async def post_daily_summary(summary: str) -> str:
         """Post the daily summary to the configured group (the only chat this
         can post to). Call it once per run. It is refused if a summary was
         already posted in the last ~20 hours, if the group had no messages in
@@ -222,35 +252,52 @@ def build_daily_server(cfg, store, state: DailyState,
         if len(text) > cfg.autopost_max_chars:
             return (f"NOT POSTED: the summary is {len(text)} characters; the limit is "
                     f"{cfg.autopost_max_chars}. Shorten it and call again.")
-        with lock:  # one post at a time, so two calls cannot both pass the check
+        async with lock:  # one post at a time, so two calls cannot both pass the check
             now = clock()
-            last = state.last_post()
+            last, outcome = state.last()
             if last and now - last < interval:
                 nxt = (last + interval).astimezone()
+                if outcome == "unknown":
+                    return (f"NOT POSTED: an earlier post at {last.astimezone():%a %d %b %H:%M} may or may not "
+                            "have been delivered (the WhatsApp bridge did not confirm in time). To avoid a "
+                            "duplicate, nothing more is posted until a person checks the group and runs "
+                            "'daily-summary reset-limit' if it did not arrive.")
                 return (f"NOT POSTED: a summary was already posted at {last.astimezone():%a %d %b %H:%M}; "
                         f"the next one is allowed after {nxt:%a %d %b %H:%M}.")
-            recent, _ = store.messages(chat_jid=jid, since=now - timedelta(hours=24), limit=1)
+            recent, _ = await anyio.to_thread.run_sync(
+                lambda: store.messages(chat_jid=jid, since=now - timedelta(hours=24), limit=1))
             if not recent:
                 return "NOT POSTED: the group had no messages in the last 24 hours."
             start = now - timedelta(hours=24)
             body = (f"{PREFIX}, {start.astimezone():%a %d %b %H:%M} to {now.astimezone():%a %d %b %H:%M}\n\n"
                     f"{text}")
-            ok, detail = send(jid, body)
-            if not ok:
+            # The bridge can take a while for a large group: wait in a worker
+            # thread so the server (and the tunnel's other requests) are not frozen.
+            result, detail = await anyio.to_thread.run_sync(send, jid, body)
+            if result not in ("sent", "unknown"):   # only an explicit "sent" counts as delivered
                 log.warning("daily summary NOT posted: %s", detail)
                 return f"NOT POSTED: {detail}. Nothing was sent; you may try again."
-            state.record(now, jid)
+            if result == "unknown":
+                state.record(now, jid, "unknown")
+                log.warning("daily summary outcome unknown: %s", detail)
+                return (f"UNCERTAIN: {detail}. The message may still arrive. Do NOT retry: further posts are "
+                        "blocked until a person checks the group and runs 'daily-summary reset-limit' if needed.")
+            state.record(now, jid, "sent")
             log.info("daily summary posted chat=%s chars=%d", jid, len(text))  # never the text itself
-            return f"Posted the daily summary to {group_name()}."
+            name = await anyio.to_thread.run_sync(group_name)
+            return f"Posted the daily summary to {name}."
 
     @mcp.tool()
-    def daily_status() -> str:
+    async def daily_status() -> str:
         """Which group this posts to, when it last posted, and when the next
         post is allowed. Read-only."""
-        last = state.last_post()
+        last, outcome = state.last()
         on = env_bool("WHATSAPP_AUTOPOST", False)
-        lines = [f"Group: {group_name()}", f"Automatic posting: {'ON' if on else 'OFF'}",
-                 f"Last post: {last.astimezone():%a %d %b %H:%M}" if last else "Last post: never"]
+        name = await anyio.to_thread.run_sync(group_name)
+        lines = [f"Group: {name}", f"Automatic posting: {'ON' if on else 'OFF'}",
+                 (f"Last post: {last.astimezone():%a %d %b %H:%M}"
+                  + (" (delivery NOT confirmed: check the group)" if outcome == "unknown" else ""))
+                 if last else "Last post: never"]
         if last:
             lines.append(f"Next post allowed after: {(last + interval).astimezone():%a %d %b %H:%M}")
         return "\n".join(lines)

@@ -40,12 +40,15 @@ def cfg(db, **kw):
 
 
 class FakeBridge:
-    def __init__(self, ok=True):
-        self.ok, self.sent = ok, []
+    """Stands in for daily.bridge_sender: returns (outcome, detail)."""
+
+    def __init__(self, outcome="sent"):
+        self.outcome, self.sent = outcome, []
 
     def __call__(self, jid, text):
         self.sent.append((jid, text))
-        return (True, "sent") if self.ok else (False, "bridge not reachable")
+        return self.outcome, {"sent": "sent", "failed": "bridge not reachable",
+                              "unknown": "bridge did not confirm in time"}.get(self.outcome, "?")
 
 
 @pytest.fixture
@@ -171,12 +174,12 @@ def test_switched_off_at_call_time_refuses(setup, monkeypatch):
 def test_failed_send_does_not_use_up_the_day(db, tmp_path, monkeypatch):
     monkeypatch.setenv("WHATSAPP_AUTOPOST", "true")
     from server import Store
-    bridge = FakeBridge(ok=False)
+    bridge = FakeBridge("failed")
     state = daily.DailyState(tmp_path / "s")
     mcp = daily.build_daily_server(cfg(db), Store(db), state, send=bridge)
     assert "NOT POSTED" in call(mcp, "post_daily_summary", summary="hello")
     assert state.last_post() is None
-    bridge.ok = True
+    bridge.outcome = "sent"
     assert call(mcp, "post_daily_summary", summary="hello").startswith("Posted")
 
 
@@ -337,3 +340,94 @@ def test_cli_reset_limit(db, tmp_path):
     st.record(datetime.now(timezone.utc), GROUP)
     assert cli(db, tmp_path, "reset-limit").returncode == 0
     assert st.last_post() is None
+
+
+# ---- uncertain delivery (the real-PC "Bad Gateway" case) ---------------------------
+
+def test_uncertain_send_blocks_retries_until_reset(db, tmp_path, monkeypatch):
+    # The bridge got the message but did not confirm: it may have been
+    # delivered, so an unattended retry could post it twice.
+    monkeypatch.setenv("WHATSAPP_AUTOPOST", "true")
+    from server import Store
+    bridge = FakeBridge("unknown")
+    state = daily.DailyState(tmp_path / "s")
+    mcp = daily.build_daily_server(cfg(db), Store(db), state, send=bridge)
+    out = call(mcp, "post_daily_summary", summary="hello")
+    assert out.startswith("UNCERTAIN") and "Do NOT retry" in out
+    bridge.outcome = "sent"
+    assert "may or may not have been delivered" in call(mcp, "post_daily_summary", summary="hello")
+    assert len(bridge.sent) == 1                                   # no second attempt reached the bridge
+    assert "NOT confirmed" in call(mcp, "daily_status")
+    state.reset()                                                  # a person checked: it did not arrive
+    assert call(mcp, "post_daily_summary", summary="hello").startswith("Posted")
+
+
+@pytest.mark.parametrize("bad", [(False, "x"), (True, "x"), ("ok", "x"), (None, None)])
+def test_only_an_explicit_sent_counts_as_delivered(db, tmp_path, monkeypatch, bad):
+    monkeypatch.setenv("WHATSAPP_AUTOPOST", "true")
+    from server import Store
+    state = daily.DailyState(tmp_path / "s")
+    mcp = daily.build_daily_server(cfg(db), Store(db), state, send=lambda j, t: bad)
+    assert call(mcp, "post_daily_summary", summary="hello").startswith("NOT POSTED")
+    assert state.last_post() is None
+
+
+def test_old_state_file_without_outcome_reads_as_sent(tmp_path):
+    st = daily.DailyState(tmp_path)
+    st.path.write_text(json.dumps({"last_post_utc": "2026-11-04T22:00:00+00:00", "chat": GROUP}))
+    assert st.last()[1] == "sent"
+
+
+def test_slow_bridge_does_not_freeze_the_server(db, tmp_path):
+    # Regression (real PC): a send to a large group took long; the tool ran on
+    # the event loop and froze the server, so the tunnel got "Bad Gateway".
+    import http.server
+    import threading
+
+    class SlowBridge(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            time.sleep(6)
+            body = b'{"success": true, "message": "sent"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    bridge = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SlowBridge)
+    threading.Thread(target=bridge.serve_forever, daemon=True).start()
+    proc, port, env = start_server(db, tmp_path, WA_BRIDGE_URL=f"http://127.0.0.1:{bridge.server_address[1]}/api")
+    try:
+        assert port
+        result = {}
+
+        def post():
+            def pinned(headers=None, timeout=None, auth=None):
+                return httpx.AsyncClient(headers=headers, timeout=timeout or httpx.Timeout(60), auth=auth,
+                                         verify=net.ctx(tmp_path / "tls"), follow_redirects=True)
+
+            async def go():
+                async with streamablehttp_client(net.url(port, f"/daily/{DAILY_TOKEN}"),
+                                                 httpx_client_factory=pinned) as (r, w, _):
+                    async with ClientSession(r, w) as s:
+                        await s.initialize()
+                        res = await s.call_tool("post_daily_summary", {"summary": "slow day"})
+                        result["text"] = res.content[0].text
+            asyncio.run(go())
+
+        t = threading.Thread(target=post)
+        t.start()
+        time.sleep(1.5)                                   # the post is now waiting on the slow bridge
+        start = time.monotonic()
+        for _ in range(3):                                # new TLS connections + requests still served
+            assert net.healthy(port, tmp_path / "tls")
+        assert time.monotonic() - start < 2, "server froze while the bridge was slow"
+        t.join(30)
+        assert result.get("text", "").startswith("Posted")
+    finally:
+        proc.terminate()
+        proc.wait(10)
+        bridge.shutdown()
