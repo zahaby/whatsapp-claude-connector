@@ -13,14 +13,18 @@ Token and tool checks go over the connector's local admin channel
 (admin_channel.py; on macOS/Linux the Unix socket MCP_ADMIN_SOCKET), so they work even when MCP_ALLOWED_IPS only admits
 Anthropic's addresses on the TCP port. wait-healthy uses the TCP port, so
 it also proves the listener cloudflared forwards to is up.
-Each check sends at most ONE request with a wrong token, so it never trips
-the connector's failed-attempt lockout. Nothing here prints a token.
+The token is NEVER transmitted: the server first proves it holds the token
+(HMAC challenge-response, admin_auth.py), so a program impersonating the
+admin channel learns nothing. Nothing here prints a token.
 """
 
 from __future__ import annotations
 
 import argparse
+import hmac
+import http.client
 import json
+import secrets
 import os
 import sys
 import time
@@ -30,6 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import admin_channel  # noqa: E402
+from admin_auth import HELLO_PATH, request_mac, server_proof  # noqa: E402
 from server import Config  # noqa: E402  (loads .env the same way the server does)
 
 
@@ -45,21 +50,56 @@ def _status(req: urllib.request.Request, timeout: float = 5) -> tuple[int, bytes
         return e.code, e.read()
 
 
-def tools_list(cfg: Config, token: str) -> tuple[int, list[str]]:
-    """POST tools/list over the local admin channel."""
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-    conn = admin_channel.connect(cfg)
-    try:
-        conn.request("POST", "/mcp", body=body, headers={
-            "Authorization": f"Bearer {token}", "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream"})
-        r = conn.getresponse()
+class NotOurConnector(Exception):
+    """The admin channel could not prove it holds the token in .env."""
+
+
+class AdminSession:
+    """One connection to the admin channel, authenticated both ways without
+    ever sending the token (see admin_auth.py)."""
+
+    def __init__(self, cfg: Config, token: str):
+        self.cfg, self.token = cfg, token
+        self.conn = admin_channel.connect(cfg)
+
+    def close(self) -> None:
+        self.conn.close()
+
+    def _hello(self) -> tuple[str, str]:
+        c = secrets.token_hex(16)
+        self.conn.request("GET", f"{HELLO_PATH}?c={c}")
+        r = self.conn.getresponse()
         raw = r.read()
+        try:
+            data = json.loads(raw) if r.status == 200 else {}
+            s, proof = str(data["s"]), str(data["proof"])
+        except (ValueError, KeyError, TypeError):
+            raise NotOurConnector(f"no valid hello (HTTP {r.status})")
+        if not hmac.compare_digest(proof, server_proof(self.token, c, s)):
+            raise NotOurConnector("proof does not match the token in .env")
+        return c, s
+
+    def post(self, path: str, body: str) -> tuple[int, bytes]:
+        c, s = self._hello()  # server proven; only now send a request
+        mac = request_mac(self.token, c, s, "POST", path)
+        self.conn.request("POST", path, body=body, headers={
+            "X-WA-Admin": f"s={s}, mac={mac}", "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream"})
+        r = self.conn.getresponse()
+        return r.status, r.read()
+
+
+def tools_list(cfg: Config, token: str) -> tuple[int, list[str]]:
+    """tools/list over the admin channel, after the server proved it holds
+    `token`. Raises NotOurConnector otherwise; `token` is never transmitted."""
+    session = AdminSession(cfg, token)
+    try:
+        status, raw = session.post("/mcp", json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
     finally:
-        conn.close()
-    if r.status != 200:
-        return r.status, []
-    return r.status, [t["name"] for t in json.loads(raw)["result"]["tools"]]
+        session.close()
+    if status != 200:
+        return status, []
+    return status, [t["name"] for t in json.loads(raw)["result"]["tools"]]
 
 
 def wait_healthy(cfg: Config, timeout_s: float) -> bool:
@@ -93,16 +133,24 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         if args.cmd == "token":
+            # The server proves it holds the NEW token (it can hold only one),
+            # so the old one is necessarily rejected. Neither is ever sent.
             old = os.environ.get("WA_OLD_TOKEN", "")
-            new_status, _ = tools_list(cfg, cfg.auth_token)
-            if new_status != 200:
-                print(f"new token NOT accepted (HTTP {new_status})", file=sys.stderr)
+            try:
+                status, _ = tools_list(cfg, cfg.auth_token)
+            except NotOurConnector:
+                if old and old != cfg.auth_token:
+                    try:
+                        tools_list(cfg, old)
+                        print("old token STILL ACTIVE: the running connector holds the previous token",
+                              file=sys.stderr)
+                        return 1
+                    except NotOurConnector:
+                        pass
+                raise
+            if status != 200:
+                print(f"new token NOT accepted (HTTP {status})", file=sys.stderr)
                 return 1
-            if old and old != cfg.auth_token:
-                old_status, _ = tools_list(cfg, old)
-                if old_status != 404:
-                    print(f"old token STILL ACCEPTED (HTTP {old_status})", file=sys.stderr)
-                    return 1
             return 0
 
         if args.cmd == "sending":
@@ -116,8 +164,12 @@ def main(argv: list[str] | None = None) -> int:
                       file=sys.stderr)
                 return 1
             return 0
-    except OSError as e:
-        print(f"cannot reach connector on 127.0.0.1:{cfg.port}: {e}", file=sys.stderr)
+    except NotOurConnector as e:
+        print(f"admin channel did NOT prove it is this connector ({e}); nothing secret was sent. "
+              "Another program may be listening on it.", file=sys.stderr)
+        return 1
+    except (OSError, http.client.HTTPException) as e:
+        print(f"cannot reach connector's admin channel: {e}", file=sys.stderr)
         return 1
     return 1
 

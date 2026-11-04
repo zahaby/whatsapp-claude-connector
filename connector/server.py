@@ -717,6 +717,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     import uvicorn
 
     import admin_channel
+    from admin_auth import AdminAuth
 
     try:
         sockets = [bind_tcp(cfg.host, cfg.port)]
@@ -739,7 +740,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     path = mcp.settings.streamable_http_path
     app = ListenerRouter(
         public=TokenGate(inner, cfg.auth_token, mcp_path=path, allowed_ips=cfg.allowed_ips),
-        local=TokenGate(inner, cfg.auth_token, mcp_path=path, allowed_ips=None),
+        # Admin channel: mutual challenge-response first (admin_auth.py), so
+        # the scripts never send the token to whoever holds the channel.
+        local=AdminAuth(TokenGate(inner, cfg.auth_token, mcp_path=path, allowed_ips=None), cfg.auth_token),
         local_match=admin.matches if admin else None,
         on_shutdown=cleanup_admin,
     )

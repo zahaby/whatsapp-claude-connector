@@ -84,7 +84,13 @@ def test_admin_socket_bypasses_allowlist_only_locally(db, tmp_path):
         cfg = Config(db_path=db, bridge_url="", allow_send=False, auth_token=TOKEN, public_hostname="",
                      host="127.0.0.1", port=0, allowed_ips=[], admin_socket=sock_dir / "admin.sock")
         assert verify.tools_list(cfg, TOKEN)[0] == 200          # local socket: allowlist not applied
-        assert verify.tools_list(cfg, "x" * 43)[0] == 404       # ...but token still required
+        with pytest.raises(verify.NotOurConnector):             # client refuses a server that
+            verify.tools_list(cfg, "x" * 43)                      # cannot prove the expected token
+        from admin_unix import UnixHTTPConnection                 # server still needs the token:
+        c = UnixHTTPConnection(str(sock_dir / "admin.sock"))
+        c.request("POST", "/mcp", body="{}", headers={"Authorization": "Bearer " + "x" * 43})
+        assert c.getresponse().status == 404
+        c.close()
         hdrs = {"Authorization": f"Bearer {TOKEN}"}
         assert _get(base + "/mcp", headers=hdrs, data=b"{}")[0] == 404   # TCP: allowlist applies
         assert stat.S_IMODE((sock_dir / "admin.sock").stat().st_mode) == 0o600

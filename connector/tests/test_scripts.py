@@ -313,7 +313,7 @@ def test_allowlist_still_enforced_on_tcp(env):
     r = subprocess.run([sys.executable, str(ROOT / "connector/verify.py"), "token"],
                        env={**env.vars, "WA_CONFIG": str(env.env_file), "MCP_AUTH_TOKEN": "B" * 43},
                        capture_output=True, text=True, timeout=20)
-    assert r.returncode == 1 and "NOT accepted (HTTP 404)" in r.stderr
+    assert r.returncode == 1 and "did NOT prove" in r.stderr  # refused before sending anything
 
 
 # ---- launchctl stub: bounded waits, zombies handled (test infrastructure) ---

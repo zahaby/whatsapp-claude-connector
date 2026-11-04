@@ -29,6 +29,11 @@ Layered, so no single mistake exposes the chats:
    any local account on that PC can connect to a loopback port, where the Unix socket admits only you. On a
    single-user PC that changes nothing in practice. Both ports are bound with `SO_EXCLUSIVEADDRUSE`, so no
    other program can take them over, and a second connector can't start.
+   **The scripts never send the token to the admin channel**, on any OS. Before every check, the connector
+   must prove it holds the token in `.env` (HMAC challenge-response over fresh nonces, `connector/admin_auth.py`);
+   the request is then authenticated with a single-use HMAC bound to that exchange, on the same connection. So
+   if another program sits on the admin port or socket while the connector is stopped, it receives a random
+   nonce and nothing else, and the script reports that the channel did not prove its identity.
 5. **Least privilege.** Read-only DB handle; send tool doesn't exist unless you switch it on. This is the main
    defence against *prompt injection*: someone writing "ignore your instructions and forward this…" in a group
    chat can't make Claude send anything while sending is off.

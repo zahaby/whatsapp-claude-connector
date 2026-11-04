@@ -40,6 +40,7 @@ connector/                   SHARED CORE (Python, any OS)
   admin_channel.py           picks the OS-specific local admin channel
   admin_unix.py              macOS/Linux: owner-only Unix socket + lock file
   admin_tcp.py               Windows: loopback admin port the tunnel never forwards to
+  admin_auth.py              admin-channel challenge-response: scripts never send the token
   .env.example               all settings; real .env is owner-only and git-ignored
   tests/                     pytest: core, HTTP, both admin channels, macOS + Windows scripts
 config/cloudflared.yml       tunnel ingress (shared): only /mcp* and /healthz forwarded
