@@ -6,7 +6,10 @@ import asyncio
 import os
 import socket
 import subprocess
+import shutil
+import stat
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -35,12 +38,12 @@ def _get(url, headers=None, data=None):
         return e.code, e.read()
 
 
-@pytest.fixture
-def server(db, tmp_path):
+def _start(db, tmp_path, **extra):
     port = _free_port()
+    sock_dir = Path(tempfile.mkdtemp(prefix="wa", dir="/tmp"))
     env = {**os.environ, "WA_CONFIG": str(tmp_path / "none"), "WA_DB_PATH": str(db),
            "MCP_AUTH_TOKEN": TOKEN, "MCP_PORT": str(port), "MCP_PUBLIC_HOSTNAME": "wa.example.com",
-           "WHATSAPP_ALLOW_SEND": "false"}
+           "WHATSAPP_ALLOW_SEND": "false", "MCP_ADMIN_SOCKET": str(sock_dir / "admin.sock"), **extra}
     proc = subprocess.Popen([sys.executable, str(SERVER), "--transport", "http"], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     base = f"http://127.0.0.1:{port}"
@@ -53,9 +56,36 @@ def server(db, tmp_path):
     else:
         proc.kill()
         pytest.fail("server did not start: " + proc.stderr.read())
+    return base, proc, sock_dir
+
+
+@pytest.fixture
+def server(db, tmp_path):
+    base, proc, sock_dir = _start(db, tmp_path)
     yield base, proc
     proc.terminate()
     proc.wait(5)
+    shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+def test_admin_socket_bypasses_allowlist_only_locally(db, tmp_path):
+    base, proc, sock_dir = _start(db, tmp_path, MCP_ALLOWED_IPS="160.79.104.0/21")
+    try:
+        sys.path.insert(0, str(SERVER.parent))
+        import verify
+        from server import Config
+        cfg = Config(db_path=db, bridge_url="", allow_send=False, auth_token=TOKEN, public_hostname="",
+                     host="127.0.0.1", port=0, allowed_ips=[], admin_socket=sock_dir / "admin.sock")
+        assert verify.tools_list(cfg, TOKEN)[0] == 200          # local socket: allowlist not applied
+        assert verify.tools_list(cfg, "x" * 43)[0] == 404       # ...but token still required
+        hdrs = {"Authorization": f"Bearer {TOKEN}"}
+        assert _get(base + "/mcp", headers=hdrs, data=b"{}")[0] == 404   # TCP: allowlist applies
+        assert stat.S_IMODE((sock_dir / "admin.sock").stat().st_mode) == 0o600
+    finally:
+        proc.terminate()
+        proc.wait(5)
+    assert not (sock_dir / "admin.sock").exists()               # cleaned up on shutdown
+    shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 def test_unauthenticated_requests_get_404(server):

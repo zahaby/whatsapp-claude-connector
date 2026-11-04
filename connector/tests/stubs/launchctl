@@ -15,12 +15,34 @@ start_conn() {
     >> "$st/connector.log" 2>&1 &
   echo $! > "$st/com.wa.connector.pid"
 }
+# A process counts as alive only if it exists AND is not a zombie. Zombies
+# still pass `kill -0`; in containers whose PID 1 does not reap orphans they
+# never go away, which used to hang this stub forever.
+alive() {
+  kill -0 "$1" 2>/dev/null || return 1
+  command -v ps >/dev/null 2>&1 || return 0
+  case "$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')" in
+    Z*|"") return 1 ;;
+  esac
+  return 0
+}
+wait_gone() {   # wait_gone PID TICKS (0.05s each); returns 1 on timeout
+  local i=0
+  while alive "$1"; do
+    i=$((i + 1)); [ "$i" -ge "$2" ] && return 1
+    sleep 0.05
+  done
+}
 stop_conn() {
   local f="$st/com.wa.connector.pid" pid
   [ -f "$f" ] || return 0
   pid="$(cat "$f")"; rm -f "$f"
   kill "$pid" 2>/dev/null || return 0
-  while kill -0 "$pid" 2>/dev/null; do sleep 0.05; done
+  wait_gone "$pid" 100 && return 0               # 5s for a graceful stop
+  echo "stub launchctl: $pid ignored SIGTERM, sending SIGKILL" >&2
+  kill -9 "$pid" 2>/dev/null || true
+  wait_gone "$pid" 40 || echo "stub launchctl: $pid still present after SIGKILL" >&2
+  return 0
 }
 
 case "$cmd" in
@@ -28,7 +50,7 @@ case "$cmd" in
     l="$(basename "$1")"
     [ -f "$st/$l.loaded" ] || { echo "Could not find service \"$l\"" >&2; exit 113; }
     echo "$1 = {"
-    if [ -f "$st/$l.pid" ] && kill -0 "$(cat "$st/$l.pid")" 2>/dev/null; then
+    if [ -f "$st/$l.pid" ] && alive "$(cat "$st/$l.pid")"; then
       printf '\tpid = %s\n' "$(cat "$st/$l.pid")"
     fi
     echo "}" ;;

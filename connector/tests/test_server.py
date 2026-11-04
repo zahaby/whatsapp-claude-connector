@@ -1,5 +1,6 @@
 import asyncio
 import re
+from pathlib import Path
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -253,3 +254,19 @@ def test_http_mode_refuses_weak_token(monkeypatch, db):
     monkeypatch.setenv("MCP_AUTH_TOKEN", "short")
     with pytest.raises(SystemExit):
         server.main(["--transport", "http"])
+
+
+def test_router_sends_only_exact_admin_socket_to_local_gate():
+    from server import ListenerRouter
+    seen = []
+
+    def mk(name):
+        async def app(scope, receive, send):
+            seen.append(name)
+        return app
+
+    r = ListenerRouter(mk("public"), mk("local"), Path("/run/wa/admin.sock"))
+    for server in [("/run/wa/admin.sock", None), ("127.0.0.1", 8765), ("/run/wa/admin.sock", 80),
+                   ("/other.sock", None), None]:
+        asyncio.run(r({"type": "http", "server": server}, None, None))
+    assert seen == ["local", "public", "public", "public", "public"]

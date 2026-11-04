@@ -9,6 +9,10 @@ success after observing the new behaviour, not just after editing .env.
   verify.py sending --expect on|off            send tool present / absent
 
 Exit status 0 = verified, 1 = not verified (reason on stderr).
+Token and tool checks go over the connector's local Unix socket
+(MCP_ADMIN_SOCKET), so they work even when MCP_ALLOWED_IPS only admits
+Anthropic's addresses on the TCP port. wait-healthy uses the TCP port, so
+it also proves the listener cloudflared forwards to is up.
 Each check sends at most ONE request with a wrong token, so it never trips
 the connector's failed-attempt lockout. Nothing here prints a token.
 """
@@ -16,6 +20,8 @@ the connector's failed-attempt lockout. Nothing here prints a token.
 from __future__ import annotations
 
 import argparse
+import http.client
+import socket
 import json
 import os
 import sys
@@ -40,17 +46,34 @@ def _status(req: urllib.request.Request, timeout: float = 5) -> tuple[int, bytes
         return e.code, e.read()
 
 
+class UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, path: str, timeout: float = 5):
+        super().__init__("localhost", timeout=timeout)  # Host: localhost passes the Host check
+        self.path = path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.path)
+
+
 def tools_list(cfg: Config, token: str) -> tuple[int, list[str]]:
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode()
-    req = urllib.request.Request(
-        _base(cfg) + "/mcp", data=body, method="POST",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
-                 "Accept": "application/json, text/event-stream"},
-    )
-    status, raw = _status(req)
-    if status != 200:
-        return status, []
-    return status, [t["name"] for t in json.loads(raw)["result"]["tools"]]
+    """POST tools/list over the local admin socket."""
+    if not cfg.admin_socket:
+        raise OSError("MCP_ADMIN_SOCKET not configured")
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    conn = UnixHTTPConnection(str(cfg.admin_socket))
+    try:
+        conn.request("POST", "/mcp", body=body, headers={
+            "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream"})
+        r = conn.getresponse()
+        raw = r.read()
+    finally:
+        conn.close()
+    if r.status != 200:
+        return r.status, []
+    return r.status, [t["name"] for t in json.loads(raw)["result"]["tools"]]
 
 
 def wait_healthy(cfg: Config, timeout_s: float) -> bool:

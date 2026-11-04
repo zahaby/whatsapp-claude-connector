@@ -79,6 +79,7 @@ class Config:
     host: str
     port: int
     allowed_ips: list[str]
+    admin_socket: Optional[Path] = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -93,6 +94,7 @@ class Config:
             host=os.environ.get("MCP_HOST", "127.0.0.1"),
             port=int(os.environ.get("MCP_PORT", "8765")),
             allowed_ips=[c.strip() for c in os.environ.get("MCP_ALLOWED_IPS", "").split(",") if c.strip()],
+            admin_socket=Path(os.path.expanduser(os.environ.get("MCP_ADMIN_SOCKET") or str(HERE / ".run/admin.sock"))),
         )
 
 
@@ -611,6 +613,77 @@ class TokenGate:
         return await self.app(scope, receive, send)
 
 
+class ListenerRouter:
+    """Dispatch each request by the listener it arrived on.
+
+    * TCP 127.0.0.1:MCP_PORT, the port cloudflared forwards to: `public`
+      gate (token + MCP_ALLOWED_IPS).
+    * Unix socket MCP_ADMIN_SOCKET (owner-only 0600, in a 0700 directory):
+      `local` gate (token required, IP allowlist not applied). Used by
+      verify.py so the scripts can check a live server even when the
+      allowlist only admits Anthropic's addresses. The tunnel cannot reach
+      a Unix socket, so this does not loosen what remote callers face.
+      Note that the allowlist never restricted LOCAL processes anyway: they
+      can reach the TCP port and set CF-Connecting-IP themselves.
+
+    uvicorn reports a Unix-socket request as scope["server"] == (path, None);
+    TCP requests carry (host, port). Matching the exact path is unambiguous.
+    """
+
+    def __init__(self, public, local, admin_socket: Optional[Path], on_shutdown=None):
+        self.public, self.local = public, local
+        self.admin_path = str(admin_socket) if admin_socket else None
+        self.on_shutdown = on_shutdown
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "lifespan" and self.on_shutdown:
+            # Run cleanup during graceful shutdown. uvicorn re-raises SIGTERM
+            # after serving, which would skip a `finally` in main().
+            async def send_wrapper(message):
+                if message["type"] in ("lifespan.shutdown.complete", "lifespan.shutdown.failed"):
+                    self.on_shutdown()
+                await send(message)
+            return await self.public(scope, receive, send_wrapper)
+        server = scope.get("server") or ()
+        if self.admin_path and len(server) == 2 and server[1] is None and server[0] == self.admin_path:
+            return await self.local(scope, receive, send)
+        return await self.public(scope, receive, send)
+
+
+def bind_admin_socket(path: Path):
+    import socket as _socket
+    if len(str(path).encode()) > 100:  # macOS sun_path limit is 104 bytes
+        sys.exit(f"MCP_ADMIN_SOCKET path too long for a Unix socket: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    if path.exists() or path.is_symlink():
+        path.unlink()
+    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    old_umask = os.umask(0o177)  # socket file created 0600
+    try:
+        sock.bind(str(path))
+    finally:
+        os.umask(old_umask)
+    os.chmod(path, 0o600)
+    return sock
+
+
+def remove_admin_socket(path: Optional[Path]) -> None:
+    if path:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def bind_tcp(host: str, port: int):
+    import socket as _socket
+    sock = _socket.socket(_socket.AF_INET6 if ":" in host else _socket.AF_INET, _socket.SOCK_STREAM)
+    sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    return sock
+
+
 # --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
@@ -639,10 +712,24 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     import uvicorn
 
-    app = TokenGate(mcp.streamable_http_app(), cfg.auth_token,
-                    mcp_path=mcp.settings.streamable_http_path, allowed_ips=cfg.allowed_ips)
-    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="warning",
-                access_log=False, proxy_headers=False)  # access log would record the token path
+    inner = mcp.streamable_http_app()
+    path = mcp.settings.streamable_http_path
+    app = ListenerRouter(
+        public=TokenGate(inner, cfg.auth_token, mcp_path=path, allowed_ips=cfg.allowed_ips),
+        local=TokenGate(inner, cfg.auth_token, mcp_path=path, allowed_ips=None),
+        admin_socket=cfg.admin_socket,
+        on_shutdown=lambda: remove_admin_socket(cfg.admin_socket),
+    )
+    sockets = [bind_tcp(cfg.host, cfg.port)]
+    if cfg.admin_socket:
+        sockets.append(bind_admin_socket(cfg.admin_socket))
+    # One server on both sockets: one lifespan, one signal handler.
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False,  # access log would record the token path
+                                           proxy_headers=False))
+    try:
+        server.run(sockets=sockets)
+    finally:
+        remove_admin_socket(cfg.admin_socket)
 
 
 if __name__ == "__main__":

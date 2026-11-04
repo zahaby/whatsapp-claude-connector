@@ -34,7 +34,7 @@ Upstream is pinned to an audited commit (`scripts/common.sh`) and left unmodifie
 ```
 connector/server.py          MCP server (tools, send switch, TokenGate auth)
 connector/.env.example       all settings; real .env is chmod 600 and git-ignored
-connector/verify.py          checks what the RUNNING connector enforces (used by the scripts)
+connector/verify.py          checks what the RUNNING connector enforces, over a local owner-only socket
 connector/tests/             pytest: server, HTTP integration, and the shell scripts (stubbed launchctl)
 scripts/install.sh           clone+pin upstream, patch, build, venv, token, launchd
 scripts/link-whatsapp.sh     run bridge in foreground so the OWNER scans the QR
@@ -89,17 +89,20 @@ Once the remote connector works you can remove the local Desktop entry so tools 
 cd connector && uv run --group dev pytest -q
 ```
 
-42 tests, three files:
+53 tests, three files:
 
 * `test_server.py`: send tool absent by default; two-step send (no send on first call, invented / reused /
   expired / mismatched proposals rejected); chat-name resolution; newest messages chosen by real UTC time across
   mixed offsets; unreadable timestamps excluded and reported, never a crash; read-only DB; TokenGate.
 * `test_http.py`: the real server process with the MCP client: no token → 404, token URL → tools and transcript,
-  wrong Host → 421, token never in logs.
+  wrong Host → 421, token never in logs; with `MCP_ALLOWED_IPS` set, the local socket still works but the TCP
+  port keeps rejecting non-allowlisted callers.
 * `test_scripts.py`: runs the real scripts with stubbed `launchctl`/`go`/`uv`/`cloudflared`. The `launchctl`
   stub runs the real connector, so: a fresh install with no hostname completes and writes all three services;
   token rotation is verified against the live process; a failing or silent restart makes rotation and the
-  sending switch exit non-zero with a warning that is shown to be true.
+  sending switch exit non-zero with a warning that is shown to be true. Rotation and the switch run both with and
+  without `MCP_ALLOWED_IPS`. The stub's process waits are bounded and handle zombies, so the suite cannot hang
+  in containers.
 
 **Not covered by the tests: real launchd on a Mac.** On the Mac, check by hand once (5 minutes):
 

@@ -19,6 +19,11 @@ Layered, so no single mistake exposes the chats:
 4. **Only Claude can reach it (optional extra).** Set `MCP_ALLOWED_IPS` to Anthropic's published outbound IP
    ranges. Connector calls come from Anthropic's servers, not your phone. Then a leaked URL alone is useless
    to anyone else. Check the current ranges in Anthropic's docs when you set it up; don't hardcode from memory.
+   The maintenance scripts check the live server over a separate local Unix socket (`connector/.run/admin.sock`,
+   owner-only `0600`). It still needs the token but skips the IP allowlist, so verification works with the
+   allowlist on. The tunnel can't reach a Unix socket, so remote callers always face the allowlist.
+   (The allowlist was never a barrier to programs already running on your Mac: they can reach the TCP port
+   directly and set the client-IP header themselves.)
 5. **Least privilege.** Read-only DB handle; send tool doesn't exist unless you switch it on. This is the main
    defence against *prompt injection*: someone writing "ignore your instructions and forward this…" in a group
    chat can't make Claude send anything while sending is off.
