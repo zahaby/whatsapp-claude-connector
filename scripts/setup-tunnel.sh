@@ -9,7 +9,7 @@ NAME=wa-connector
 cloudflared tunnel info "$NAME" >/dev/null 2>&1 || cloudflared tunnel create "$NAME"
 TUNNEL_ID="$(cloudflared tunnel info "$NAME" -o json | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
 cloudflared tunnel route dns "$NAME" "$HOSTNAME"
-/usr/bin/sed -e "s|__TUNNEL_ID__|$TUNNEL_ID|g" -e "s|__HOME__|$HOME|g" -e "s|__HOSTNAME__|$HOSTNAME|g" \
+sed -e "s|__TUNNEL_ID__|$TUNNEL_ID|g" -e "s|__HOME__|$HOME|g" -e "s|__HOSTNAME__|$HOSTNAME|g" \
   -e "s|__PORT__|$(env_get MCP_PORT)|g" "$REPO/config/cloudflared.yml" > "$HOME/.cloudflared/wa-connector.yml"
 env_set MCP_PUBLIC_HOSTNAME "$HOSTNAME"
 echo "Tunnel ready: https://$HOSTNAME  ->  127.0.0.1:$(env_get MCP_PORT)"

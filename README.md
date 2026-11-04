@@ -21,7 +21,7 @@ Claude Desktop ──stdio──┐                                             
 | Upstream as-is | This connector |
 |---|---|
 | stdio only, so it can't be a remote connector | stdio **and** Streamable HTTP |
-| `send_message`, `send_file`, `send_audio_message` always exposed | send tool **does not exist** unless `WHATSAPP_ALLOW_SEND=true`; even then it requires a confirmation round-trip |
+| `send_message`, `send_file`, `send_audio_message` always exposed | send tool **does not exist** unless `WHATSAPP_ALLOW_SEND=true`; even then a two-step send: a single-use, 5-minute proposal bound to the exact recipient and text |
 | Bridge REST API (incl. unauthenticated `/api/send`) listens on **all interfaces** `:8080` | `install.sh` patches it to `127.0.0.1` |
 | Needs several tool calls to resolve a chat name, then page through messages | `get_chat_transcript("Family", days=7)`: one call, fuzzy name match, oldest-first transcript ready to summarise (good fit for voice) |
 | DB opened read-write | DB opened `mode=ro` |
@@ -34,14 +34,15 @@ Upstream is pinned to an audited commit (`scripts/common.sh`) and left unmodifie
 ```
 connector/server.py          MCP server (tools, send switch, TokenGate auth)
 connector/.env.example       all settings; real .env is chmod 600 and git-ignored
-connector/tests/             pytest: send gating, name resolution, auth gate, read-only DB
+connector/verify.py          checks what the RUNNING connector enforces (used by the scripts)
+connector/tests/             pytest: server, HTTP integration, and the shell scripts (stubbed launchctl)
 scripts/install.sh           clone+pin upstream, patch, build, venv, token, launchd
 scripts/link-whatsapp.sh     run bridge in foreground so the OWNER scans the QR
 scripts/setup-tunnel.sh      one-time Cloudflare named tunnel + DNS
 scripts/start.sh|stop.sh|status.sh
-scripts/sending.sh on|off    THE SEND SWITCH
-scripts/rotate-token.sh      new secret, old URL dies instantly
-scripts/connector-url.sh     prints the secret connector URL (--copy to clipboard)
+scripts/sending.sh on|off    THE SEND SWITCH (verifies the running connector)
+scripts/rotate-token.sh      new secret; verifies old token rejected before claiming success
+scripts/connector-url.sh     copies the secret connector URL to the clipboard (--print to show)
 launchd/*.plist              bridge, connector, tunnel as login services (auto-restart)
 config/cloudflared.yml       tunnel ingress: only /mcp* and /healthz forwarded
 docs/HANDOVER.md             one-page restart / re-link note
@@ -74,7 +75,7 @@ scripts/setup-tunnel.sh wa.yourdomain.com
 scripts/start.sh
 ```
 ```bash
-scripts/connector-url.sh --copy
+scripts/connector-url.sh
 ```
 Owner (not the helper) pastes the URL into **claude.ai → Settings → Connectors → Add custom connector**, name it "WhatsApp".
 It syncs to the iPhone app. Test from iPhone voice mode: *"Summarise my Family WhatsApp chat."*
@@ -88,10 +89,26 @@ Once the remote connector works you can remove the local Desktop entry so tools 
 cd connector && uv run --group dev pytest -q
 ```
 
-Covers: send tool absent by default and confirmation-gated when on; Go timestamp parsing; chat-name resolution
-(exact vs ambiguous); 7-day window and sender names; DB is read-only; TokenGate path token, bearer header,
-lockout after 10 failures, IP allowlist; HTTP mode refuses weak tokens. Also smoke-tested end to end with the MCP
-Python client over Streamable HTTP (no token → 404, token → tools; wrong Host header → 421).
+42 tests, three files:
+
+* `test_server.py`: send tool absent by default; two-step send (no send on first call, invented / reused /
+  expired / mismatched proposals rejected); chat-name resolution; newest messages chosen by real UTC time across
+  mixed offsets; unreadable timestamps excluded and reported, never a crash; read-only DB; TokenGate.
+* `test_http.py`: the real server process with the MCP client: no token → 404, token URL → tools and transcript,
+  wrong Host → 421, token never in logs.
+* `test_scripts.py`: runs the real scripts with stubbed `launchctl`/`go`/`uv`/`cloudflared`. The `launchctl`
+  stub runs the real connector, so: a fresh install with no hostname completes and writes all three services;
+  token rotation is verified against the live process; a failing or silent restart makes rotation and the
+  sending switch exit non-zero with a warning that is shown to be true.
+
+**Not covered by the tests: real launchd on a Mac.** On the Mac, check by hand once (5 minutes):
+
+```bash
+scripts/start.sh && scripts/rotate-token.sh && scripts/sending.sh on && scripts/sending.sh off && scripts/status.sh
+```
+
+Each step must print `Verified`. Then try the failure path: `launchctl bootout gui/$(id -u)/com.wa.connector`,
+run `scripts/sending.sh status` (should say "not running"), then `scripts/start.sh`.
 
 ## Known limits / things to verify on the day
 

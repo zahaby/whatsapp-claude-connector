@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Test double for macOS launchctl. Tracks "loaded" services in $STUB_STATE and
+# runs the REAL connector server for com.wa.connector, so scripts can be
+# checked against a live process. Failure modes via env:
+#   STUB_KICKSTART=fail   kickstart exits non-zero
+#   STUB_KICKSTART=noop   kickstart "succeeds" but restarts nothing
+#   STUB_BOOTSTRAP=fail   bootstrap exits non-zero
+set -u
+st="$STUB_STATE"
+echo "$*" >> "$st/calls"
+cmd="$1"; shift
+
+start_conn() {
+  WA_CONFIG="$WA_ENV_FILE" "$WA_PYTHON" "$STUB_REPO/connector/server.py" --transport http \
+    >> "$st/connector.log" 2>&1 &
+  echo $! > "$st/com.wa.connector.pid"
+}
+stop_conn() {
+  local f="$st/com.wa.connector.pid" pid
+  [ -f "$f" ] || return 0
+  pid="$(cat "$f")"; rm -f "$f"
+  kill "$pid" 2>/dev/null || return 0
+  while kill -0 "$pid" 2>/dev/null; do sleep 0.05; done
+}
+
+case "$cmd" in
+  print)
+    l="$(basename "$1")"
+    [ -f "$st/$l.loaded" ] || { echo "Could not find service \"$l\"" >&2; exit 113; }
+    echo "$1 = {"
+    if [ -f "$st/$l.pid" ] && kill -0 "$(cat "$st/$l.pid")" 2>/dev/null; then
+      printf '\tpid = %s\n' "$(cat "$st/$l.pid")"
+    fi
+    echo "}" ;;
+  kickstart)
+    [ "$1" = "-k" ] && shift
+    l="$(basename "$1")"
+    [ -f "$st/$l.loaded" ] || { echo "Could not find service" >&2; exit 113; }
+    case "${STUB_KICKSTART:-ok}" in
+      fail) echo "Could not kickstart service: Operation not permitted" >&2; exit 150 ;;
+      noop) exit 0 ;;
+    esac
+    if [ "$l" = com.wa.connector ]; then stop_conn; start_conn; fi ;;
+  bootstrap)
+    [ "${STUB_BOOTSTRAP:-ok}" = fail ] && { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
+    l="$(basename "$2" .plist)"
+    touch "$st/$l.loaded"
+    if [ "$l" = com.wa.connector ]; then start_conn; fi ;;
+  bootout)
+    l="$(basename "$1")"
+    rm -f "$st/$l.loaded"
+    if [ "$l" = com.wa.connector ]; then stop_conn; fi ;;
+  *) echo "stub launchctl: unsupported $cmd" >&2; exit 64 ;;
+esac
+exit 0

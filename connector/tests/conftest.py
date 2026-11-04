@@ -17,9 +17,21 @@ CREATE TABLE messages (
 """
 
 
-def go_ts(dt: datetime) -> str:
-    """Format like go-sqlite3 stores time.Time (nanoseconds + offset)."""
-    return dt.strftime("%Y-%m-%d %H:%M:%S.%f") + "123+00:00"
+def go_ts(dt: datetime, offset_hours: int = 0) -> str:
+    """Format like go-sqlite3 stores time.Time: LOCAL wall-clock time with
+    nanoseconds and the UTC offset, e.g. '2025-06-01 13:04:05.123456789-05:00'."""
+    tz = timezone(timedelta(hours=offset_hours))
+    local = dt.astimezone(tz)
+    sign = "+" if offset_hours >= 0 else "-"
+    return local.strftime("%Y-%m-%d %H:%M:%S.%f") + f"123{sign}{abs(offset_hours):02d}:00"
+
+
+def add_message(db: Path, msg_id: str, ts_value, content: str, chat="1203630@g.us", sender="201000000001"):
+    c = sqlite3.connect(db)
+    c.execute("INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)",
+              (msg_id, chat, sender, content, ts_value))
+    c.commit()
+    c.close()
 
 
 @pytest.fixture

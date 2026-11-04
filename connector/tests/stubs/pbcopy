@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "pbcopy $*" >> "$STUB_STATE/calls"
+cat > "$STUB_STATE/clipboard"

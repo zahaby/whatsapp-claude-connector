@@ -1,10 +1,13 @@
 import asyncio
-import json
+import re
+import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 import server
-from server import Config, Store, TokenGate, build_server, parse_ts
+from conftest import add_message, go_ts
+from server import Config, SendProposals, Store, TokenGate, build_server, parse_ts
 
 TOKEN = "t" * 43
 
@@ -40,12 +43,136 @@ def test_send_tool_present_when_switched_on(db):
     assert "send_message" in tool_names(build_server(cfg(db, allow_send=True)))
 
 
-def test_send_requires_confirmation(db, monkeypatch):
+class _OkResponse:
+    ok, status_code, text = True, 200, ""
+
+    def json(self):
+        return {"success": True}
+
+
+@pytest.fixture
+def sender(db, monkeypatch):
+    """A send-enabled server with the bridge HTTP call captured."""
     monkeypatch.setenv("WHATSAPP_ALLOW_SEND", "true")
     posted = []
-    monkeypatch.setattr("requests.post", lambda *a, **k: posted.append(k))
-    out = call(build_server(cfg(db, allow_send=True)), "send_message", chat="Mum", message="hi")
-    assert "Not sent" in out and not posted
+    monkeypatch.setattr("requests.post", lambda url, **kw: posted.append(kw["json"]) or _OkResponse())
+    return build_server(cfg(db, allow_send=True)), posted
+
+
+def _proposal_id(text):
+    m = re.search(r'proposal_id="([^"]+)"', text)
+    assert m, text
+    return m.group(1)
+
+
+def test_send_first_call_only_proposes(sender):
+    mcp, posted = sender
+    out = call(mcp, "send_message", chat="Mum", message="hi")
+    assert out.startswith("NOT SENT") and _proposal_id(out) and posted == []
+
+
+def test_send_cannot_skip_proposal_with_invented_id(sender):
+    # Regression (finding 2): the old user_confirmed=true on a FIRST call sent
+    # immediately. Now nothing is sent without a server-issued proposal.
+    mcp, posted = sender
+    assert "NOT SENT" in call(mcp, "send_message", chat="Mum", message="hi", proposal_id="made-up")
+    try:
+        call(mcp, "send_message", chat="Mum", message="hi", user_confirmed=True)
+    except Exception:
+        pass  # unknown argument rejected outright is also fine
+    assert posted == []
+
+
+def test_send_proposal_bound_to_exact_text_and_recipient(sender):
+    mcp, posted = sender
+    pid = _proposal_id(call(mcp, "send_message", chat="Mum", message="hi"))
+    assert "differs" in call(mcp, "send_message", chat="Mum", message="hi!", proposal_id=pid)
+    pid = _proposal_id(call(mcp, "send_message", chat="Mum", message="hi"))
+    assert "differs" in call(mcp, "send_message", chat="Family", message="hi", proposal_id=pid)
+    assert posted == []
+
+
+def test_send_proposal_single_use(sender):
+    mcp, posted = sender
+    pid = _proposal_id(call(mcp, "send_message", chat="Mum", message="see you at 8"))
+    assert call(mcp, "send_message", chat="Mum", message="see you at 8", proposal_id=pid) == "Sent to Mum."
+    assert posted == [{"recipient": "201000000001@s.whatsapp.net", "message": "see you at 8"}]
+    assert "already used" in call(mcp, "send_message", chat="Mum", message="see you at 8", proposal_id=pid)
+    assert len(posted) == 1
+
+
+def test_send_proposal_expires():
+    now = [1000.0]
+    props = SendProposals(clock=lambda: now[0])
+    pid = props.create("jid", "msg")
+    now[0] += SendProposals.TTL_S + 1
+    assert props.redeem(pid, "jid", "msg") == "proposal expired."
+    assert props.redeem(pid, "jid", "msg") is not None  # and it is gone
+
+
+def test_send_proposals_bounded():
+    props = SendProposals()
+    ids = [props.create("jid", str(i)) for i in range(SendProposals.MAX_OPEN + 5)]
+    assert props.redeem(ids[0], "jid", "0") is not None   # oldest evicted
+    assert props.redeem(ids[-1], "jid", str(len(ids) - 1)) is None
+
+
+# ---- timestamps (findings 4 and 5) ----------------------------------------
+
+def test_newest_selected_by_real_time_not_string(db):
+    # Regression (finding 4): b is newer in UTC, but its local "-05:00" string
+    # sorts earlier, so SQL ORDER BY/LIMIT on strings returned a instead.
+    now = datetime.now(timezone.utc)
+    add_message(db, "a", go_ts(now - timedelta(hours=2), 0), "older UTC")
+    add_message(db, "b", go_ts(now - timedelta(hours=1), -5), "newer in New York")
+    msgs, _ = Store(db).messages(chat_jid="1203630@g.us", limit=1)
+    assert [m["id"] for m in msgs] == ["b"]
+    msgs, _ = Store(db).messages(chat_jid="1203630@g.us", since=now - timedelta(hours=3), limit=10)
+    ids = [m["id"] for m in msgs]
+    assert ids.index("a") < ids.index("b") and ids[-1] == "b"
+    assert [m["timestamp"] for m in msgs] == sorted(m["timestamp"] for m in msgs)  # chronological
+
+
+def test_window_uses_real_time_across_offsets(db):
+    now = datetime.now(timezone.utc)
+    # 30 min ago, stored with +14:00: the string looks 13.5h in the FUTURE.
+    add_message(db, "kiribati", go_ts(now - timedelta(minutes=30), 14), "recent")
+    # 2 days ago, stored with -12:00
+    add_message(db, "baker", go_ts(now - timedelta(days=2), -12), "two days")
+    msgs, _ = Store(db).messages(chat_jid="1203630@g.us", since=now - timedelta(days=1), limit=50)
+    ids = [m["id"] for m in msgs]
+    assert "kiribati" in ids and "baker" not in ids
+
+
+def test_chats_sorted_by_real_time(db):
+    now = datetime.now(timezone.utc)
+    c = sqlite3.connect(db)
+    c.execute("INSERT INTO chats VALUES (?,?,?)", ("x@g.us", "NY cousins", go_ts(now + timedelta(minutes=1), -5)))
+    c.execute("INSERT INTO chats VALUES (?,?,?)", ("y@g.us", "Broken", "garbage"))
+    c.commit()
+    c.close()
+    chats = Store(db).chats()
+    assert chats[0]["name"] == "NY cousins" and chats[-1]["name"] == "Broken"
+    assert chats[-1]["last_message_time"] is None
+
+
+@pytest.mark.parametrize("bad", ["not-a-time", "", 12345, b"\x00"])
+def test_invalid_timestamps_excluded_and_reported(db, bad):
+    # Regression (finding 5): an unparseable timestamp crashed search_messages.
+    add_message(db, "bad", bad, "Dinner plans with broken clock")
+    mcp = build_server(cfg(db))
+    out = call(mcp, "search_messages", query="Dinner")
+    assert "Dinner Friday at 8?" in out
+    assert "broken clock" not in out
+    assert "1 message(s) excluded because their timestamp is unreadable" in out
+    transcript = call(mcp, "get_chat_transcript", chat="Family")
+    assert "broken clock" not in transcript and "unreadable" in transcript
+
+
+def test_search_only_invalid_timestamps(db):
+    add_message(db, "bad", "nope", "zebra")
+    out = call(build_server(cfg(db)), "search_messages", query="zebra")
+    assert out.startswith("No matching messages.") and "unreadable" in out
 
 
 def test_resolve_exact_beats_partial(db):

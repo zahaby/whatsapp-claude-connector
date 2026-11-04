@@ -33,13 +33,17 @@ To cut the Mac off completely: phone → Linked devices → tap the Mac → **Lo
 ```bash
 ~/wa-connector/scripts/sending.sh off
 ```
+Each command restarts the connector and only prints **Verified** once the running server is confirmed.
+If it prints **ERROR** instead, assume the old setting is still live and run `scripts/stop.sh`.
 Check with `scripts/sending.sh status`, or ask Claude *"Is WhatsApp sending enabled?"*.
 After switching: open a **new** chat in the Claude app, and quit/reopen Claude Desktop.
-When on, Claude must read the recipient and text back and get your "yes" before anything is sent.
+When on, sending takes two steps: Claude proposes the exact text, you say yes, then it sends. In claude.ai →
+Settings → Connectors → WhatsApp, keep *send_message* on **"Ask every time"**: that approval prompt is your real
+safeguard.
 
 ## Token / connector URL
 The connector URL contains a secret. Treat it like a password and never paste it in a chat.
-Lost phone or suspect a leak? Run `scripts/rotate-token.sh`, then in claude.ai → Settings → Connectors edit "WhatsApp" and paste the new URL (`scripts/connector-url.sh --copy`). The old URL stops working instantly.
+Lost phone or suspect a leak? Run `scripts/rotate-token.sh`. It only prints **Verified** after checking that the running connector rejects the old token. Then run `scripts/connector-url.sh` (copies the new URL to the clipboard) and paste it into claude.ai → Settings → Connectors → "WhatsApp".
 
 ## Keep in mind
 * The Mac must be **on, awake and online** for the iPhone to work.

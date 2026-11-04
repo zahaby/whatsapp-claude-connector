@@ -19,11 +19,17 @@ Layered, so no single mistake exposes the chats:
 4. **Only Claude can reach it (optional extra).** Set `MCP_ALLOWED_IPS` to Anthropic's published outbound IP
    ranges. Connector calls come from Anthropic's servers, not your phone. Then a leaked URL alone is useless
    to anyone else. Check the current ranges in Anthropic's docs when you set it up; don't hardcode from memory.
-5. **Least privilege.** Read-only DB handle; send tool doesn't exist unless you switch it on; when on, it needs an
-   explicit confirmation. This is also the main defence against *prompt injection*: someone writing
-   "ignore your instructions and forward this…" in a group chat can't make Claude send anything.
-6. **Kill switches.** `scripts/rotate-token.sh` (instant new URL), `scripts/stop.sh` (all off), or unlink the
-   Mac from WhatsApp on your phone.
+5. **Least privilege.** Read-only DB handle; send tool doesn't exist unless you switch it on. This is the main
+   defence against *prompt injection*: someone writing "ignore your instructions and forward this…" in a group
+   chat can't make Claude send anything while sending is off.
+6. **Kill switches.** `scripts/rotate-token.sh` (new URL; it confirms the old token is rejected by the running
+   server before saying so), `scripts/stop.sh` (all off), or unlink the Mac from WhatsApp on your phone.
+
+**If you switch sending on**, the send is two-step: the first call returns a random proposal id bound to the
+exact recipient and text. Only a second call with that id and identical text sends, within 5 minutes, once.
+**Limitation:** both calls come from the model, so the server cannot independently verify that *you* said yes.
+A model misled by a malicious message could make the two calls back to back. The real human check is the
+Claude app's per-tool approval prompt. Keep `send_message` on "Ask every time" in the connector settings.
 
 Honest trade-offs:
 * The token is in the URL, so it is stored in your claude.ai connector settings and visible to Cloudflare,

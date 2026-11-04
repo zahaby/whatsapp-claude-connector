@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+echo "go $*" >> "$STUB_STATE/calls"
+# go build -o whatsapp-bridge .  -> produce the binary
+if [ "${1:-}" = build ]; then touch whatsapp-bridge && chmod +x whatsapp-bridge; fi

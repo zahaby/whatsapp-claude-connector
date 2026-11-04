@@ -1,0 +1,25 @@
+name: tests
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Shell syntax (stock bash)
+        run: for f in scripts/*.sh; do /bin/bash -n "$f"; done
+      - name: Show bash and sed in use
+        run: /bin/bash --version | head -1; (sed --version 2>/dev/null || echo "BSD sed") | head -1
+      - name: pytest
+        working-directory: connector
+        env:
+          # macOS: run the scripts with Apple's /bin/bash 3.2 and BSD sed, as on the user's Mac.
+          WA_TEST_BASH: /bin/bash
+        run: uv run --group dev pytest -q -rs
