@@ -7,6 +7,7 @@ dependencies = [
     "mcp[cli]>=1.12,<2",   # FastMCP + Streamable HTTP; mcp 2.x renamed FastMCP
     "requests>=2.32",
     "uvicorn>=0.30",
+    "cryptography>=42",   # loopback TLS certificate (tls.py)
 ]
 
 [dependency-groups]

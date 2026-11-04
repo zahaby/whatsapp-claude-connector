@@ -187,13 +187,13 @@ function Start-WaService([string]$Svc) {
     if (-not (Wait-Until { Test-ServiceRunning $Svc } 10)) { throw "could not start $Svc" }
 }
 
+# One health check over TLS that trusts only the connector's own certificate
+# (verify.py health), so a program squatting on the port cannot pass it.
 function Test-Health {
-    try {
-        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "http://127.0.0.1:$(Get-Port)/healthz"
-        return $r.StatusCode -eq 200
-    } catch {
-        return $false
-    }
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Py $Verify health 2>$null | Out-Null; return ($LASTEXITCODE -eq 0) }
+    finally { $ErrorActionPreference = $old }
 }
 
 # Restart the connector and wait until a NEW process serves. Stop first and

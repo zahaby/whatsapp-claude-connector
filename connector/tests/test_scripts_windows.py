@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+import net
+
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell scripts")
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +49,7 @@ class Env:
         self.env_file = tmp / "connector.env"
         self.logs = tmp / "logs"
         self.startup = tmp / "startup"
+        self.tls_dir = tmp / "tls"
         self.db = db
         self.port = free_port()
         self.admin_port = free_port()
@@ -65,6 +68,7 @@ class Env:
             "WA_RESTART_TIMEOUT": "30",
             "WA_RESTART_DELAY": "1",
             "UPSTREAM": str(tmp / "upstream"),
+            "MCP_TLS_DIR": str(self.tls_dir),
         }
 
     def write_env(self, **extra):
@@ -72,6 +76,7 @@ class Env:
             "WA_DB_PATH": str(self.db), "WHATSAPP_ALLOW_SEND": "false",
             "MCP_AUTH_TOKEN": "A" * 43, "MCP_PUBLIC_HOSTNAME": "", "MCP_PORT": str(self.port),
             "MCP_ADMIN_CHANNEL": "tcp", "MCP_ADMIN_PORT": str(self.admin_port),
+            "MCP_TLS_DIR": str(self.tls_dir),
             **extra,
         }
         self.env_file.write_text("".join(f"{k}={v}\n" for k, v in values.items()), encoding="utf-8")
@@ -93,24 +98,18 @@ class Env:
         if self.allowlist and not cf_ip:
             cf_ip = "160.79.105.10"
         req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/mcp", method="POST",
+            net.url(self.port, "/mcp"), method="POST",
             data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode(),
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
                      "Accept": "application/json, text/event-stream",
                      **({"CF-Connecting-IP": cf_ip} if cf_ip else {})})
-        try:
-            with urllib.request.urlopen(req, timeout=10) as r:
-                self.last_tools = [t["name"] for t in json.loads(r.read())["result"]["tools"]]
-                return r.status
-        except urllib.error.HTTPError as e:
-            return e.code
+        status, raw = net.request(req, self.tls_dir, timeout=10)
+        if status == 200:
+            self.last_tools = [t["name"] for t in json.loads(raw)["result"]["tools"]]
+        return status
 
     def healthy(self) -> bool:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/healthz", timeout=2) as r:
-                return r.status == 200
-        except OSError:
-            return False
+        return net.healthy(self.port, self.tls_dir)
 
     def connector_pids(self) -> list[int]:
         """Real connector processes (server.py --transport http) for this test's port."""

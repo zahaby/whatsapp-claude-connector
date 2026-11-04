@@ -56,6 +56,13 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
 Protect-File $EnvFile
 if (-not (Get-EnvValue 'MCP_AUTH_TOKEN')) { Set-NewToken; Write-Output 'Generated connector token.' }
 
+Write-Output '==> Loopback TLS certificate (cloudflared and the scripts pin it)'
+$tlsDir = Get-EnvValue 'MCP_TLS_DIR'
+if ($tlsDir -and -not $env:MCP_TLS_DIR) { $env:MCP_TLS_DIR = $tlsDir }   # environment wins, like the server
+$cert = (& $Py (Join-Path $Repo 'connector\tls.py') ensure)
+if ($LASTEXITCODE -ne 0 -or -not $cert) { Fail 'could not create the TLS certificate' }
+Protect-File (Join-Path (Split-Path -Parent ([string]$cert).Trim()) 'connector.key')
+
 Write-Output '==> Start at login (shortcut in your Startup folder)'
 New-Item -ItemType Directory -Force -Path $Logs, $StartupDir | Out-Null
 $lnk = Join-Path $StartupDir 'wa-connector.lnk'

@@ -1,6 +1,7 @@
 connector/.env
 connector/.venv/
 connector/.run/
+connector/.tls/
 __pycache__/
 .pytest_cache/
 *.db

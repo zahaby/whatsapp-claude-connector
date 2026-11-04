@@ -15,7 +15,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import httpx
 import pytest
+
+import net
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
@@ -29,13 +32,12 @@ def _free_port():
         return s.getsockname()[1]
 
 
+TLS_DIR = {"current": None}   # the running test server's certificate directory
+
+
 def _get(url, headers=None, data=None):
     req = urllib.request.Request(url, headers=headers or {}, data=data, method="POST" if data else "GET")
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
+    return net.request(req, TLS_DIR["current"])
 
 
 IS_WINDOWS = sys.platform == "win32"
@@ -49,15 +51,16 @@ def _start(db, tmp_path, **extra):
             {"MCP_ADMIN_SOCKET": str(sock_dir / "admin.sock")}
     env = {**os.environ, "WA_CONFIG": str(tmp_path / "none"), "WA_DB_PATH": str(db),
            "MCP_AUTH_TOKEN": TOKEN, "MCP_PORT": str(port), "MCP_PUBLIC_HOSTNAME": "wa.example.com",
-           "WHATSAPP_ALLOW_SEND": "false", **admin, **extra}
+           "WHATSAPP_ALLOW_SEND": "false", "MCP_TLS_DIR": str(sock_dir / "tls"), **admin, **extra}
+    TLS_DIR["current"] = sock_dir / "tls"
     proc = subprocess.Popen([sys.executable, str(SERVER), "--transport", "http"], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    base = f"http://127.0.0.1:{port}"
+    base = net.url(port)
     for _ in range(100):
         try:
             if _get(base + "/healthz")[0] == 200:
                 break
-        except OSError:
+        except OSError:  # includes "no certificate yet" and connection refused
             time.sleep(0.1)
     else:
         proc.kill()
@@ -82,12 +85,13 @@ def test_admin_socket_bypasses_allowlist_only_locally(db, tmp_path):
         import verify
         from server import Config
         cfg = Config(db_path=db, bridge_url="", allow_send=False, auth_token=TOKEN, public_hostname="",
-                     host="127.0.0.1", port=0, allowed_ips=[], admin_socket=sock_dir / "admin.sock")
+                     host="127.0.0.1", port=0, allowed_ips=[], admin_socket=sock_dir / "admin.sock",
+                     tls_dir=sock_dir / "tls")
         assert verify.tools_list(cfg, TOKEN)[0] == 200          # local socket: allowlist not applied
         with pytest.raises(verify.NotOurConnector):             # client refuses a server that
             verify.tools_list(cfg, "x" * 43)                      # cannot prove the expected token
-        from admin_unix import UnixHTTPConnection                 # server still needs the token:
-        c = UnixHTTPConnection(str(sock_dir / "admin.sock"))
+        from admin_unix import UnixHTTPSConnection                # server still needs the token:
+        c = UnixHTTPSConnection(str(sock_dir / "admin.sock"), net.ctx(sock_dir / "tls"))
         c.request("POST", "/mcp", body="{}", headers={"Authorization": "Bearer " + "x" * 43})
         assert c.getresponse().status == 404
         c.close()
@@ -113,7 +117,11 @@ def test_mcp_client_over_token_url(server):
     base, _ = server
 
     async def go():
-        async with streamablehttp_client(f"{base}/mcp/{TOKEN}") as (r, w, _):
+        def pinned_client(headers=None, timeout=None, auth=None):
+            return httpx.AsyncClient(headers=headers, timeout=timeout or httpx.Timeout(30), auth=auth,
+                                     verify=net.ctx(TLS_DIR["current"]), follow_redirects=True)
+
+        async with streamablehttp_client(f"{base}/mcp/{TOKEN}", httpx_client_factory=pinned_client) as (r, w, _):
             async with ClientSession(r, w) as s:
                 await s.initialize()
                 names = {t.name for t in (await s.list_tools()).tools}

@@ -1,2 +1,8 @@
 #!/usr/bin/env bash
+# Test double for cloudflared: records calls; `tunnel info NAME -o json`
+# prints a fixed tunnel id like the real tool.
 echo "cloudflared $*" >> "$STUB_STATE/calls"
+case " $* " in
+  *" -o json "*) echo '{"id":"tid-123","name":"wa-connector"}' ;;
+esac
+exit 0

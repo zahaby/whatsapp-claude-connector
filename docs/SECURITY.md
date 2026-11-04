@@ -34,6 +34,17 @@ Layered, so no single mistake exposes the chats:
    the request is then authenticated with a single-use HMAC bound to that exchange, on the same connection. So
    if another program sits on the admin port or socket while the connector is stopped, it receives a random
    nonce and nothing else, and the script reports that the channel did not prove its identity.
+7. **The connector proves its identity to the tunnel.** The tunnel forwards your iPhone's requests, with the
+   token in the URL, to the connector's local port. If the connector were stopped and another program took that
+   port, plain HTTP would hand it the token. So the connector serves **TLS only**, with its own certificate
+   (`connector/tls.py`, private key readable only by you), and `cloudflared` is set to trust exactly that
+   certificate (`caPool`) under the name `wa-connector.local` (`originServerName`). A squatter without the key
+   fails the handshake before any request is sent; the iPhone gets an error instead. The maintenance scripts
+   pin the same certificate, and the challenge-response above still holds even if the key were stolen.
+
+   Residual, stated plainly: the WhatsApp bridge's own internal API (`127.0.0.1:8080`, upstream code) is still
+   plain HTTP. It carries no token, but if you switch sending on and a program had taken port 8080 while the
+   bridge was stopped, the text of a message being sent could go to it instead. Sending is off by default.
 5. **Least privilege.** Read-only DB handle; send tool doesn't exist unless you switch it on. This is the main
    defence against *prompt injection*: someone writing "ignore your instructions and forward this…" in a group
    chat can't make Claude send anything while sending is off.

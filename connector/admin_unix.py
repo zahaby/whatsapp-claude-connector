@@ -264,6 +264,8 @@ class UnixAdminListener:
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
+    """Plain HTTP over the Unix socket (used by tests to send raw requests)."""
+
     def __init__(self, path: str, timeout: float = 5):
         super().__init__("localhost", timeout=timeout)  # Host: localhost passes the Host check
         self.unix_path = path
@@ -272,3 +274,16 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
         self.sock.connect(self.unix_path)
+
+
+class UnixHTTPSConnection(UnixHTTPConnection):
+    """TLS over the Unix socket, trusting only the connector's certificate."""
+
+    def __init__(self, path: str, ctx, timeout: float = 5):
+        super().__init__(path, timeout=timeout)
+        self.ctx = ctx
+
+    def connect(self):
+        super().connect()
+        import tls
+        self.sock = self.ctx.wrap_socket(self.sock, server_hostname=tls.SERVER_NAME)

@@ -88,6 +88,8 @@ class Config:
     # "tcp" (loopback port MCP_ADMIN_PORT, Windows default) or "off".
     admin_channel: str = "unix"
     admin_port: int = 0
+    # Loopback TLS (tls.py): certificate + key the clients pin.
+    tls_dir: Optional[Path] = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -105,6 +107,7 @@ class Config:
             admin_socket=Path(os.path.expanduser(os.environ.get("MCP_ADMIN_SOCKET") or str(HERE / ".run/admin.sock"))),
             admin_channel=(os.environ.get("MCP_ADMIN_CHANNEL") or ("tcp" if IS_WINDOWS else "unix")).strip().lower(),
             admin_port=int(os.environ.get("MCP_ADMIN_PORT") or int(os.environ.get("MCP_PORT", "8765")) + 1),
+            tls_dir=Path(os.path.expanduser(os.environ["MCP_TLS_DIR"])) if os.environ.get("MCP_TLS_DIR") else None,
         )
 
 
@@ -717,7 +720,15 @@ def main(argv: Optional[list[str]] = None) -> None:
     import uvicorn
 
     import admin_channel
+    import tls
     from admin_auth import AdminAuth
+
+    # TLS on every listener, so local clients (cloudflared, verify.py) can
+    # check they are talking to this connector before sending anything.
+    try:
+        tls_files = tls.ensure(cfg.tls_dir or tls.default_dir())
+    except tls.TlsError as e:
+        fatal(f"Refusing to start: {e}")
 
     try:
         sockets = [bind_tcp(cfg.host, cfg.port)]
@@ -751,6 +762,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         app, log_level="warning", access_log=False,  # access log would record the token path
         proxy_headers=False,
         log_config=None if args.log_file else uvicorn.config.LOGGING_CONFIG,  # None: use our file handler
+        ssl_certfile=str(tls_files.cert), ssl_keyfile=str(tls_files.key),
     ))
     try:
         server.run(sockets=sockets)

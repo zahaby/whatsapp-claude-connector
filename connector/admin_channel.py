@@ -54,15 +54,23 @@ def open_listener(cfg):
     return UnixAdminListener(cfg.admin_socket)
 
 
+def tls_cert(cfg) -> "Path":
+    import tls
+    return tls.files(cfg.tls_dir or tls.default_dir()).cert
+
+
 def connect(cfg, timeout: float = 5) -> http.client.HTTPConnection:
-    """An HTTP connection to the running connector's admin channel."""
+    """A TLS connection to the running connector's admin channel that
+    trusts only the connector's own certificate."""
+    import tls
     ch = _channel(cfg)
     if ch == "off":
         raise OSError("admin channel is off (MCP_ADMIN_CHANNEL=off)")
+    ctx = tls.client_context(tls_cert(cfg))
     if ch == "tcp":
         from admin_tcp import connect as tcp_connect
-        return tcp_connect(cfg.admin_port, timeout=timeout)
+        return tcp_connect(cfg.admin_port, ctx, timeout=timeout)
     if not cfg.admin_socket:
         raise OSError("MCP_ADMIN_SOCKET not configured")
-    from admin_unix import UnixHTTPConnection
-    return UnixHTTPConnection(str(cfg.admin_socket), timeout=timeout)
+    from admin_unix import UnixHTTPSConnection
+    return UnixHTTPSConnection(str(cfg.admin_socket), ctx, timeout=timeout)

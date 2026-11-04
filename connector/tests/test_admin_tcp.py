@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+import net
+
 import admin_channel
 from admin_tcp import AdminPortError, TcpAdminListener, bind_admin_port
 from server import Config, Store
@@ -123,18 +125,20 @@ def test_default_channel_and_port(monkeypatch, tmp_path):
 
 # ---- end to end over the tcp channel ----------------------------------------
 
+TLS_DIR = {"current": None}
+
+
 def _tools(port: int, token: str, cf_ip: str = "") -> tuple[int, list]:
     req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/mcp", method="POST",
+        net.url(port, "/mcp"), method="POST",
         data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
                  "Accept": "application/json, text/event-stream",
                  **({"CF-Connecting-IP": cf_ip} if cf_ip else {})})
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status, [t["name"] for t in json.loads(r.read())["result"]["tools"]]
-    except urllib.error.HTTPError as e:
-        return e.code, []
+    status, raw = net.request(req, TLS_DIR["current"])
+    if status != 200:
+        return status, []
+    return status, [t["name"] for t in json.loads(raw)["result"]["tools"]]
 
 
 @pytest.fixture
@@ -143,15 +147,15 @@ def tcp_server(db, tmp_path):
     log_file = tmp_path / "logs" / "connector.log"
     env = {**os.environ, "WA_CONFIG": str(tmp_path / "none"), "WA_DB_PATH": str(db),
            "MCP_AUTH_TOKEN": TOKEN, "MCP_PORT": str(public), "MCP_ADMIN_CHANNEL": "tcp",
-           "MCP_ADMIN_PORT": str(admin), "MCP_ALLOWED_IPS": "160.79.104.0/21"}
+           "MCP_ADMIN_PORT": str(admin), "MCP_ALLOWED_IPS": "160.79.104.0/21",
+           "MCP_TLS_DIR": str(tmp_path / "tls")}
+    TLS_DIR["current"] = tmp_path / "tls"
     proc = subprocess.Popen([sys.executable, str(SERVER), "--transport", "http", "--log-file", str(log_file)],
                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(150):
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{public}/healthz", timeout=1):
-                break
-        except OSError:
-            time.sleep(0.1)
+        if net.healthy(public, tmp_path / "tls"):
+            break
+        time.sleep(0.1)
     else:
         proc.kill()
         pytest.fail("server did not start: " + (log_file.read_text() if log_file.exists() else ""))

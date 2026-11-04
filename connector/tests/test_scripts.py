@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+import net
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "macos"
@@ -53,6 +55,7 @@ class Env:
         # Short path: Unix socket paths are limited to ~104 bytes on macOS.
         self.sock_dir = Path(tempfile.mkdtemp(prefix="wa", dir="/tmp"))
         self.admin_socket = self.sock_dir / "run" / "admin.sock"
+        self.tls_dir = self.sock_dir / "tls"
         self.port = free_port()
         self.db = db
         self.vars = {
@@ -65,6 +68,7 @@ class Env:
             "WA_PYTHON": sys.executable,
             "WA_RESTART_TIMEOUT": "8",
             "UPSTREAM": str(tmp / "upstream"),
+            "MCP_TLS_DIR": str(self.tls_dir),
         }
 
     def write_env(self, **extra):
@@ -72,6 +76,7 @@ class Env:
             "WA_DB_PATH": str(self.db), "WHATSAPP_ALLOW_SEND": "false",
             "MCP_AUTH_TOKEN": "A" * 43, "MCP_PUBLIC_HOSTNAME": "", "MCP_PORT": str(self.port),
             "MCP_ADMIN_SOCKET": str(self.admin_socket),
+            "MCP_TLS_DIR": str(self.tls_dir),
             **extra,
         }
         self.env_file.write_text("".join(f"{k}={v}\n" for k, v in values.items()))
@@ -92,16 +97,14 @@ class Env:
         cf_ip simulates the CF-Connecting-IP header the tunnel adds."""
         extra = {"CF-Connecting-IP": cf_ip} if cf_ip else {}
         req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/mcp", method="POST",
+            net.url(self.port, "/mcp"), method="POST",
             data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode(),
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
                      "Accept": "application/json, text/event-stream", **extra})
-        try:
-            with urllib.request.urlopen(req, timeout=5) as r:
-                self.last_tools = [t["name"] for t in json.loads(r.read())["result"]["tools"]]
-                return r.status
-        except urllib.error.HTTPError as e:
-            return e.code
+        status, raw = net.request(req, self.tls_dir)
+        if status == 200:
+            self.last_tools = [t["name"] for t in json.loads(raw)["result"]["tools"]]
+        return status
 
     allowlist = False
 

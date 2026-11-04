@@ -4,12 +4,16 @@
 # Outbound-only: no router ports are opened, the Mac's IP is never exposed.
 source "$(dirname "$0")/common.sh"
 HOSTNAME="${1:?usage: $0 <hostname e.g. wa.example.com>}"
+# The connector's TLS certificate, which cloudflared will pin (created if missing).
+CA_POOL="$(MCP_TLS_DIR="${MCP_TLS_DIR:-$(env_get MCP_TLS_DIR)}" "$PY" "$REPO/connector/tls.py" ensure)" || die "could not prepare the TLS certificate"
 NAME=wa-connector
 [ -f "$HOME/.cloudflared/cert.pem" ] || cloudflared tunnel login   # browser login, owner does this
+mkdir -p "$HOME/.cloudflared"
 cloudflared tunnel info "$NAME" >/dev/null 2>&1 || cloudflared tunnel create "$NAME"
 TUNNEL_ID="$(cloudflared tunnel info "$NAME" -o json | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
 cloudflared tunnel route dns "$NAME" "$HOSTNAME"
 sed -e "s|__TUNNEL_ID__|$TUNNEL_ID|g" -e "s|__HOME__|$HOME|g" -e "s|__HOSTNAME__|$HOSTNAME|g" \
-  -e "s|__PORT__|$(env_get MCP_PORT)|g" "$REPO/config/cloudflared.yml" > "$HOME/.cloudflared/wa-connector.yml"
+  -e "s|__PORT__|$(env_get MCP_PORT)|g" -e "s|__CA_POOL__|$CA_POOL|g" \
+  "$REPO/config/cloudflared.yml" > "$HOME/.cloudflared/wa-connector.yml"
 env_set MCP_PUBLIC_HOSTNAME "$HOSTNAME"
 echo "Tunnel ready: https://$HOSTNAME  ->  127.0.0.1:$(env_get MCP_PORT)"

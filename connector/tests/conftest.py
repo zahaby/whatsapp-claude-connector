@@ -58,3 +58,11 @@ def db(tmp_path: Path) -> Path:
     c.commit()
     c.close()
     return path
+
+
+@pytest.fixture(autouse=True)
+def _isolated_tls_dir(tmp_path, monkeypatch):
+    """Every test (and every server/script it starts) gets its own TLS
+    directory unless it sets MCP_TLS_DIR itself, so nothing is ever
+    created in the repo's default connector/.tls."""
+    monkeypatch.setenv("MCP_TLS_DIR", str(tmp_path / "default-tls"))

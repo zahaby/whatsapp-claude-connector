@@ -41,6 +41,9 @@ fi
 chmod 600 "$ENV_FILE"
 if [ -z "$(env_get MCP_AUTH_TOKEN)" ]; then gen_token; echo "Generated connector token."; fi
 
+echo "==> Loopback TLS certificate (cloudflared and the scripts pin it)"
+MCP_TLS_DIR="${MCP_TLS_DIR:-$(env_get MCP_TLS_DIR)}" "$PY" "$REPO/connector/tls.py" ensure >/dev/null || die "could not create the TLS certificate"
+
 echo "==> launchd services"
 mkdir -p "$LA" "$LOGS"
 for label in "${LABELS[@]}"; do

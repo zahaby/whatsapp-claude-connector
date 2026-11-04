@@ -13,6 +13,7 @@ import json
 import os
 import socket
 import socketserver
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,9 @@ import time
 from pathlib import Path
 
 import pytest
+
+import net
+import tls
 
 import admin_auth
 from admin_auth import HELLO_PATH, AdminAuth, request_mac, server_proof
@@ -75,14 +79,65 @@ def everything_seen() -> str:
     return json.dumps(Recorder.seen)
 
 
-@pytest.fixture
-def fake_tcp_admin():
-    Recorder.seen = []
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Recorder)
+def tls_server_ctx(tls_dir: Path):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    f = tls.files(tls_dir)
+    ctx.load_cert_chain(str(f.cert), str(f.key))
+    return ctx
+
+
+def attacker_tls_dir(tmp_path: Path) -> Path:
+    """An attacker's OWN self-signed certificate for the same name."""
+    d = tmp_path / "attacker-tls"
+    tls.ensure(d)
+    return d
+
+
+def start_http(handler, tls_dir=None, unix_path=None):
+    """A threaded fake server, optionally TLS, on TCP or a Unix socket."""
+    if unix_path:
+        class Srv(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+            daemon_threads = True
+
+        class H(handler):
+            def address_string(self):
+                return "unix"
+        srv = Srv(str(unix_path), H)
+    else:
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    if tls_dir:
+        srv.socket = tls_server_ctx(tls_dir).wrap_socket(srv.socket, server_side=True)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield srv.server_address[1]
-    srv.shutdown()
-    srv.server_close()
+    return srv
+
+
+class RawRecorder:
+    """Plain TCP listener that just records the bytes it receives."""
+
+    def __init__(self):
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(8)
+        self.port = self.sock.getsockname()[1]
+        self.data = b""
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while True:
+            try:
+                c, _ = self.sock.accept()
+            except OSError:
+                return
+            c.settimeout(2)
+            try:
+                while chunk := c.recv(65536):
+                    self.data += chunk
+            except OSError:
+                pass
+            c.close()
+
+    def close(self):
+        self.sock.close()
 
 
 def run_verify(env, *args):
@@ -91,45 +146,91 @@ def run_verify(env, *args):
 
 
 def tcp_env(tmp_path, admin_port, **extra):
+    TLS_DIR["current"] = tmp_path / "tls"
     return {**os.environ, "WA_CONFIG": str(tmp_path / "none"), "MCP_AUTH_TOKEN": TOKEN,
-            "MCP_PORT": str(free_port()), "MCP_ADMIN_CHANNEL": "tcp", "MCP_ADMIN_PORT": str(admin_port), **extra}
+            "MCP_PORT": str(free_port()), "MCP_ADMIN_CHANNEL": "tcp", "MCP_ADMIN_PORT": str(admin_port),
+            "MCP_TLS_DIR": str(tmp_path / "tls"), **extra}
 
 
-@pytest.mark.parametrize("args", [["token"], ["sending", "--expect", "off"], ["sending", "--expect", "on"]])
-def test_impersonator_on_admin_port_learns_nothing(fake_tcp_admin, tmp_path, args):
-    # Regression (Codex): the client sent the bearer token to whoever held
-    # the port, and accepted the impersonator's "success" as verification.
-    r = run_verify(tcp_env(tmp_path, fake_tcp_admin, WA_OLD_TOKEN="0ld" + "o" * 40), *args)
-    assert r.returncode == 1, r.stdout + r.stderr
-    assert "did NOT prove" in r.stderr and "nothing secret was sent" in r.stderr
-    seen = everything_seen()
-    assert TOKEN not in seen and "0ld" + "o" * 40 not in seen
-    assert all(req["method"] == "GET" and req["path"].startswith(HELLO_PATH) for req in Recorder.seen), seen
-    assert "authorization" not in seen.lower() and "x-wa-admin" not in seen.lower()
+VERIFY_ARGS = [["token"], ["sending", "--expect", "off"], ["sending", "--expect", "on"]]
+OLD = "0ld" + "o" * 40
+
+
+def assert_learned_nothing(seen_text: str):
+    assert TOKEN not in seen_text and OLD not in seen_text
+    assert "authorization" not in seen_text.lower() and "x-wa-admin" not in seen_text.lower()
+
+
+@pytest.mark.parametrize("args", VERIFY_ARGS)
+def test_plain_http_squatter_on_admin_port_gets_no_request(tmp_path, args):
+    # Tier 1. Regression (Codex): verify.py used to send the bearer token to
+    # whoever held the port. Now TLS fails first: only handshake bytes arrive.
+    tls.ensure(tmp_path / "tls")             # the real connector's certificate exists
+    raw = RawRecorder()
+    try:
+        r = run_verify(tcp_env(tmp_path, raw.port, WA_OLD_TOKEN=OLD), *args)
+        time.sleep(0.2)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert b"HTTP/1.1" not in raw.data and b"/admin/hello" not in raw.data and b"/mcp" not in raw.data
+        assert TOKEN.encode() not in raw.data and OLD.encode() not in raw.data
+    finally:
+        raw.close()
+
+
+@pytest.mark.parametrize("args", VERIFY_ARGS)
+def test_tls_squatter_with_own_certificate_rejected(tmp_path, args):
+    # Tier 2: a TLS listener with a valid-looking certificate for the same
+    # name, but not OUR certificate. Pinning rejects it before any request.
+    tls.ensure(tmp_path / "tls")
+    Recorder.seen = []
+    srv = start_http(Recorder, tls_dir=attacker_tls_dir(tmp_path))
+    try:
+        r = run_verify(tcp_env(tmp_path, srv.server_address[1], WA_OLD_TOKEN=OLD), *args)
+        assert r.returncode == 1 and "failed TLS verification" in r.stderr, r.stderr
+        assert Recorder.seen == []
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+@pytest.mark.parametrize("args", VERIFY_ARGS)
+def test_squatter_with_stolen_tls_key_still_learns_nothing(tmp_path, args):
+    # Tier 3: even with our certificate AND private key (key theft), the
+    # HMAC challenge stops it: it sees only GET /admin/hello.
+    tls.ensure(tmp_path / "tls")
+    Recorder.seen = []
+    srv = start_http(Recorder, tls_dir=tmp_path / "tls")
+    try:
+        r = run_verify(tcp_env(tmp_path, srv.server_address[1], WA_OLD_TOKEN=OLD), *args)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "did NOT prove" in r.stderr and "nothing secret was sent" in r.stderr
+        assert all(req["method"] == "GET" and req["path"].startswith(HELLO_PATH) for req in Recorder.seen)
+        assert_learned_nothing(everything_seen())
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 @pytest.mark.skipif(IS_WINDOWS, reason="Unix socket channel")
-def test_impersonator_on_admin_socket_learns_nothing(tmp_path):
+@pytest.mark.parametrize("tier", ["own-cert", "stolen-key"])
+def test_squatter_on_admin_socket_learns_nothing(tmp_path, tier):
+    tls.ensure(tmp_path / "tls")
     Recorder.seen = []
     sock_dir = Path(tempfile.mkdtemp(prefix="wa", dir="/tmp"))
     path = sock_dir / "admin.sock"
-
-    class UnixHTTP(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-        daemon_threads = True
-
-    class Handler(Recorder):
-        def address_string(self):
-            return "unix"
-
-    srv = UnixHTTP(str(path), Handler)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    srv = start_http(Recorder, tls_dir=attacker_tls_dir(tmp_path) if tier == "own-cert" else tmp_path / "tls",
+                     unix_path=path)
     try:
         env = {**os.environ, "WA_CONFIG": str(tmp_path / "none"), "MCP_AUTH_TOKEN": TOKEN,
-               "MCP_ADMIN_CHANNEL": "unix", "MCP_ADMIN_SOCKET": str(path)}
+               "MCP_ADMIN_CHANNEL": "unix", "MCP_ADMIN_SOCKET": str(path), "MCP_TLS_DIR": str(tmp_path / "tls")}
         r = run_verify(env, "sending", "--expect", "off")
-        assert r.returncode == 1 and "did NOT prove" in r.stderr
-        assert TOKEN not in everything_seen()
-        assert all(req["method"] == "GET" for req in Recorder.seen)
+        assert r.returncode == 1
+        if tier == "own-cert":
+            assert "failed TLS verification" in r.stderr and Recorder.seen == []
+        else:
+            assert "did NOT prove" in r.stderr
+            assert all(req["method"] == "GET" for req in Recorder.seen)
+        assert_learned_nothing(everything_seen())
     finally:
         srv.shutdown()
         srv.server_close()
@@ -138,8 +239,8 @@ def test_impersonator_on_admin_socket_learns_nothing(tmp_path):
 
 
 def test_relay_of_proof_for_another_token_rejected(tmp_path):
-    """A listener that knows a DIFFERENT token (e.g. an old connector still
-    running) produces a real but wrong proof: still refused, nothing sent."""
+    """A listener with our TLS key that knows a DIFFERENT token (e.g. an old
+    connector) produces a real but wrong proof: still refused, nothing sent."""
     other = "other" + "z" * 38
 
     class OtherTokenServer(Recorder):
@@ -149,9 +250,9 @@ def test_relay_of_proof_for_another_token_rejected(tmp_path):
             s = "cd" * 16
             self._reply({"s": s, "proof": server_proof(other, c, s)})
 
+    tls.ensure(tmp_path / "tls")
     Recorder.seen = []
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), OtherTokenServer)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    srv = start_http(OtherTokenServer, tls_dir=tmp_path / "tls")
     try:
         r = run_verify(tcp_env(tmp_path, srv.server_address[1]), "sending", "--expect", "off")
         assert r.returncode == 1 and "proof does not match" in r.stderr
@@ -172,13 +273,10 @@ def real_server(db, tmp_path):
     proc = subprocess.Popen([sys.executable, str(SERVER), "--transport", "http",
                              "--log-file", str(tmp_path / "c.log")], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    import urllib.request
     for _ in range(150):
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{public}/healthz", timeout=1)
+        if net.healthy(public, tmp_path / "tls"):
             break
-        except OSError:
-            time.sleep(0.1)
+        time.sleep(0.1)
     else:
         proc.kill()
         pytest.fail("server did not start")
@@ -200,9 +298,11 @@ def test_rotation_not_applied_is_detected(real_server):
     assert r.returncode == 1 and "old token STILL ACTIVE" in r.stderr
 
 
+TLS_DIR = {"current": None}
+
+
 def _raw(port, method, path, headers=None, body=None):
-    import http.client
-    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c = net.connection(port, TLS_DIR["current"])
     c.request(method, path, body=body, headers=headers or {})
     r = c.getresponse()
     return c, r.status, r.read()

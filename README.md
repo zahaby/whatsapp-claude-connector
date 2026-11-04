@@ -41,6 +41,7 @@ connector/                   SHARED CORE (Python, any OS)
   admin_unix.py              macOS/Linux: owner-only Unix socket + lock file
   admin_tcp.py               Windows: loopback admin port the tunnel never forwards to
   admin_auth.py              admin-channel challenge-response: scripts never send the token
+  tls.py                     loopback TLS certificate that cloudflared and the scripts pin
   .env.example               all settings; real .env is owner-only and git-ignored
   tests/                     pytest: core, HTTP, both admin channels, macOS + Windows scripts
 config/cloudflared.yml       tunnel ingress (shared): only /mcp* and /healthz forwarded
@@ -169,6 +170,13 @@ Each step must print `Verified`. Then try the failure path: `launchctl bootout g
 run `macos/sending.sh status` (should say "not running"), then `macos/start.sh`.
 
 ## Known limits / things to verify on the day
+
+* **Upgrading an install made before loopback TLS:** re-run `macos/setup-tunnel.sh <hostname>` (or
+  `windows\setup-tunnel.ps1 <hostname>`) once, then restart. The old tunnel config points at `http://`, which
+  the connector no longer serves.
+* **First real remote test:** CI can't run `cloudflared` against Cloudflare. On the day, after `setup-tunnel` and
+  `start`, check `status` shows `public health: ok`. If it shows DOWN, `~/Library/Logs/wa-connector/tunnel.log`
+  (or `%LOCALAPPDATA%\wa-connector\logs\tunnel.log`) names the TLS error.
 
 * **Voice mode + connectors:** confirm on the owner's iPhone app version that voice mode calls connector tools.
   If it doesn't, the fallback is dictation in a normal chat. The connector is the same either way.

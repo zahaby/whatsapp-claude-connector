@@ -74,5 +74,6 @@ class TcpAdminListener:
             pass
 
 
-def connect(port: int, timeout: float = 5) -> http.client.HTTPConnection:
-    return http.client.HTTPConnection(HOST, port, timeout=timeout)
+def connect(port: int, ctx, timeout: float = 5) -> http.client.HTTPConnection:
+    # Certificate pinned by `ctx`; its IP SAN 127.0.0.1 is checked.
+    return http.client.HTTPSConnection(HOST, port, context=ctx, timeout=timeout)

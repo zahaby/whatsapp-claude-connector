@@ -1,9 +1,16 @@
-# Template: macos/setup-tunnel.sh renders it to ~/.cloudflared/wa-connector.yml
+# Template: macos/setup-tunnel.sh or windows\setup-tunnel.ps1 renders it to ~/.cloudflared/wa-connector.yml
 tunnel: __TUNNEL_ID__
 credentials-file: __HOME__/.cloudflared/__TUNNEL_ID__.json
 ingress:
   # Only the MCP path and the health check are forwarded; everything else 404s at the edge.
   - hostname: __HOSTNAME__
     path: ^/(mcp(/.*)?|healthz)$
-    service: http://127.0.0.1:__PORT__
+    # TLS to the connector, trusting ONLY its own certificate (connector/tls.py).
+    # A process that grabs this port while the connector is stopped cannot
+    # complete the handshake, so the token in the request URL is never sent to it.
+    service: https://127.0.0.1:__PORT__
+    originRequest:
+      caPool: '__CA_POOL__'
+      originServerName: wa-connector.local
+      noTLSVerify: false
   - service: http_status:404
