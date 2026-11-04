@@ -21,6 +21,10 @@ function Get-Setting([string]$Name, [string]$Default) {
 $Repo           = Split-Path -Parent $PSScriptRoot
 $Upstream       = Get-Setting 'UPSTREAM' (Join-Path $HOME 'whatsapp-mcp')
 $UpstreamCommit = Get-Setting 'UPSTREAM_COMMIT' '7d6a06dcdce1f01dfb24f60e1030d5efba9f3b88'  # audited revision
+# WhatsApp rejects old client libraries ("Client outdated (405)"), so the
+# bridge is built against this newer whatsmeow instead of upstream's pin.
+# Bump it (and re-run install.ps1) if WhatsApp starts refusing it again.
+$WhatsmeowVersion = Get-Setting 'WHATSMEOW_VERSION' 'v0.0.0-20261102152715-54038813c47f'
 $EnvFile        = Get-Setting 'WA_ENV_FILE' (Join-Path $Repo 'connector\.env')
 $Py             = Get-Setting 'WA_PYTHON' (Join-Path $Repo 'connector\.venv\Scripts\python.exe')
 $Verify         = Join-Path $Repo 'connector\verify.py'

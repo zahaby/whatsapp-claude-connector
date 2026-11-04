@@ -5,6 +5,10 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM="${UPSTREAM:-$HOME/whatsapp-mcp}"
 UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-7d6a06dcdce1f01dfb24f60e1030d5efba9f3b88}"  # audited revision
+# WhatsApp rejects old client libraries ("Client outdated (405)"), so the
+# bridge is built against this newer whatsmeow instead of upstream's pin.
+# Bump it (and re-run install.sh) if WhatsApp starts refusing it again.
+WHATSMEOW_VERSION="${WHATSMEOW_VERSION:-v0.0.0-20261102152715-54038813c47f}"
 ENV_FILE="${WA_ENV_FILE:-$REPO/connector/.env}"
 PY="${WA_PYTHON:-$REPO/connector/.venv/bin/python}"
 export WA_CONFIG="$ENV_FILE"          # verify.py / server.py read the same file

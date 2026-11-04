@@ -42,3 +42,58 @@ jobs:
           # Windows: run the scripts with Windows PowerShell 5.1, as on a stock Windows PC.
           WA_TEST_POWERSHELL: powershell.exe
         run: uv run --group dev pytest -q -rs
+
+  bridge:
+    # The bridge is upstream Go code that tests only ever stub. Patch the REAL
+    # upstream at the pinned commit exactly as install does, then compile it.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Patch and build (macOS / Linux)
+        if: runner.os != 'Windows'
+        env:
+          UPSTREAM: ${{ runner.temp }}/whatsapp-mcp
+        run: |
+          source macos/common.sh
+          git clone -q https://github.com/lharries/whatsapp-mcp.git "$UPSTREAM"
+          git -C "$UPSTREAM" checkout -q "$UPSTREAM_COMMIT"
+          macos/patch-bridge.sh
+          cd "$UPSTREAM/whatsapp-bridge"
+          CGO_ENABLED=1 go build -o whatsapp-bridge .
+          go vet .
+
+      - name: WhatsApp accepts this client version (no account is linked)
+        if: runner.os == 'Linux'
+        env:
+          UPSTREAM: ${{ runner.temp }}/whatsapp-mcp
+        run: |
+          cd "$UPSTREAM/whatsapp-bridge" && mkdir -p store
+          (timeout 40 ./whatsapp-bridge > run.log 2>&1 || true)
+          grep -v '█' run.log | head -20
+          if grep -q "Client outdated" run.log; then echo "::error::WhatsApp rejects this whatsmeow version; bump WHATSMEOW_VERSION"; exit 1; fi
+          grep -q "Scan this QR code" run.log || { echo "::error::bridge never reached the QR pairing step"; exit 1; }
+
+      - name: Patch and build (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          UPSTREAM: ${{ runner.temp }}\whatsapp-mcp
+        run: |
+          . .\windows\common.ps1
+          git clone -q https://github.com/lharries/whatsapp-mcp.git $Upstream
+          git -C $Upstream checkout -q $UpstreamCommit
+          & .\windows\patch-bridge.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          gcc --version
+          Set-Location $BridgeDir
+          $env:CGO_ENABLED = '1'
+          go build -o whatsapp-bridge.exe .
+          if ($LASTEXITCODE -ne 0) { exit 1 }

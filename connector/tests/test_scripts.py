@@ -191,6 +191,12 @@ def test_install_fresh_without_hostname_completes(env):
     assert 'fmt.Sprintf("127.0.0.1:%d", port)' in patched
     assert "sender" not in patched.split("// Start the server")[0].split("Log based on message type")[1]
     assert not list(main_go.parent.glob("*.bak"))
+    # WhatsApp rejects the upstream-pinned whatsmeow ("Client outdated (405)"):
+    # the install moves to the pinned newer one and patches the 5 call sites.
+    assert patched.count("context.Background()") == 5
+    calls = (env.state / "calls").read_text()
+    assert "go get go.mau.fi/whatsmeow@v0.0.0-20261102152715-54038813c47f" in calls and "go mod tidy" in calls
+    assert "checkout -q -- ." in calls          # earlier patches dropped before re-patching
 
 
 def test_install_under_path_with_double_underscores(env):

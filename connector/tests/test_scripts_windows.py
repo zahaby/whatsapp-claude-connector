@@ -185,6 +185,9 @@ def test_install_fresh_without_hostname(env):
     assert '"whatsapp-family"' in r.stdout              # Claude Desktop snippet printed
     calls = (env.state / "calls").read_text()
     assert "go build" in calls and "uv sync" in calls
+    assert patched.count("context.Background()") == 5
+    assert "go get go.mau.fi/whatsmeow@v0.0.0-20261102152715-54038813c47f" in calls and "go mod tidy" in calls
+    assert "checkout -q -- ." in calls
 
 
 def test_install_rerun_keeps_token(env):

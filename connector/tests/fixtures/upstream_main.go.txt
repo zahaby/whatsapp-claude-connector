@@ -9,3 +9,9 @@ package main
 	// Start the server
 	serverAddr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
+// whatsmeow call sites install patches for the newer library:
+	mediaData, err := client.Download(downloader)
+	container, err := sqlstore.New("sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	deviceStore, err := container.GetFirstDevice()
+			groupInfo, err := client.GetGroupInfo(jid)
+		contact, err := client.Store.Contacts.GetContact(jid)

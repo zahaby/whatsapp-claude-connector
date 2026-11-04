@@ -19,21 +19,12 @@ if (-not (Test-Path -LiteralPath (Join-Path $Upstream '.git'))) {
     if ((Invoke-Native 'git' @('clone', 'https://github.com/lharries/whatsapp-mcp.git', $Upstream)) -ne 0) { Fail 'git clone failed' }
 }
 if ((Invoke-Native 'git' @('-C', $Upstream, 'fetch', '-q', 'origin')) -ne 0) { Fail 'git fetch failed' }
+# Drop earlier patches first: always patch clean upstream.
+if ((Invoke-Native 'git' @('-C', $Upstream, 'checkout', '-q', '--', '.')) -ne 0) { Fail 'git reset of upstream failed' }
 if ((Invoke-Native 'git' @('-C', $Upstream, 'checkout', '-q', $UpstreamCommit)) -ne 0) { Fail 'git checkout failed' }
 
-$main = Join-Path $BridgeDir 'main.go'
-$src = [IO.File]::ReadAllText($main)
-
-Write-Output '==> Hardening bridge: REST API (incl. unauthenticated /api/send) binds to 127.0.0.1 only'
-$src = $src.Replace('serverAddr := fmt.Sprintf(":%d", port)', 'serverAddr := fmt.Sprintf("127.0.0.1:%d", port)')
-if (-not $src.Contains('fmt.Sprintf("127.0.0.1:%d", port)')) { Fail 'Patch failed: upstream changed, review main.go' }
-
-Write-Output '==> Privacy: stop the bridge printing message text to the terminal/log'
-$src = [regex]::Replace($src,
-    'fmt\.Printf\("\[%s\] %s %s: (\[%s: %s\] )?%s\\n", timestamp, direction, sender(, mediaType, filename)?, content\)',
-    'fmt.Printf("[%s] %s message stored\n", timestamp, direction)')
-if ([regex]::IsMatch($src, 'fmt\.Printf\(.*sender.*content\)')) { Fail 'Patch failed: bridge still prints message content, review main.go' }
-[IO.File]::WriteAllText($main, $src, $Utf8NoBom)
+& (Join-Path $PSScriptRoot 'patch-bridge.ps1')
+if ($LASTEXITCODE -ne 0) { exit 1 }
 
 Write-Output '==> Building bridge (CGO, needs gcc)'
 $env:CGO_ENABLED = '1'
