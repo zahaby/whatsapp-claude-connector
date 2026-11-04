@@ -229,13 +229,16 @@ def test_stop_really_stops(running):
 
 
 def test_supervisor_restarts_crashed_connector(running):
+    # A venv's python.exe on Windows is a launcher that starts the real
+    # interpreter as a child, so one connector is 1 or 2 python processes.
     pids = running.connector_pids()
-    assert len(pids) == 1
-    subprocess.run(["taskkill", "/F", "/PID", str(pids[0])], capture_output=True)
+    assert 1 <= len(pids) <= 2, pids
+    for pid in pids:  # crash: everything belonging to the connector dies
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         new = running.connector_pids()
-        if new and new != pids and running.healthy():
+        if new and not set(new) & set(pids) and running.healthy():
             break
         time.sleep(0.5)
     else:
