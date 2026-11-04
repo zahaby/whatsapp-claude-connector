@@ -26,10 +26,13 @@ alive() {
   esac
   return 0
 }
-wait_gone() {   # wait_gone PID TICKS (0.05s each); returns 1 on timeout
-  local i=0
+wait_gone() {   # wait_gone PID SECONDS; returns 1 on timeout
+  # Deadline on the wall clock ($SECONDS, bash 3.2-safe), not a tick count:
+  # each `alive` check forks ps, which is slow on macOS runners, so a fixed
+  # number of ticks could take several times longer than intended.
+  local deadline=$((SECONDS + $2))
   while alive "$1"; do
-    i=$((i + 1)); [ "$i" -ge "$2" ] && return 1
+    [ "$SECONDS" -ge "$deadline" ] && return 1
     sleep 0.05
   done
 }
@@ -38,10 +41,10 @@ stop_conn() {
   [ -f "$f" ] || return 0
   pid="$(cat "$f")"; rm -f "$f"
   kill "$pid" 2>/dev/null || return 0
-  wait_gone "$pid" 100 && return 0               # 5s for a graceful stop
+  wait_gone "$pid" 5 && return 0                 # 5s for a graceful stop
   echo "stub launchctl: $pid ignored SIGTERM, sending SIGKILL" >&2
   kill -9 "$pid" 2>/dev/null || true
-  wait_gone "$pid" 40 || echo "stub launchctl: $pid still present after SIGKILL" >&2
+  wait_gone "$pid" 2 || echo "stub launchctl: $pid still present after SIGKILL" >&2
   return 0
 }
 
