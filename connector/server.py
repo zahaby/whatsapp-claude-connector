@@ -679,11 +679,58 @@ def _prepare_admin_dir(directory: Path) -> None:
             "Use a private directory, e.g. leave MCP_ADMIN_SOCKET unset.")
 
 
-def _clear_stale_socket(path: Path) -> None:
-    """Remove `path` only if it is a socket we own that nothing is serving.
-    Regular files, symlinks (even to sockets), directories, other users'
-    sockets and live sockets are refused, never deleted."""
-    import socket as _socket
+def _open_lock(lock_path: Path) -> int:
+    """Open (creating 0600) the lock file next to the socket and take an
+    exclusive, non-blocking flock. The kernel drops the lock when the
+    process exits for any reason, including SIGKILL, so "lock is free"
+    reliably means "no connector is running on this socket"."""
+    import fcntl
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError as e:  # O_NOFOLLOW on a symlink -> ELOOP
+        raise AdminSocketError(f"cannot open lock file {lock_path} safely ({e}); refusing")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+            raise AdminSocketError(f"lock file {lock_path} is not a regular file owned by this user")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise AdminSocketError(f"another connector is running on {lock_path.with_suffix('')} "
+                                   "(its lock is held); refusing to start a second one")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_record(fd: int) -> Optional[tuple[int, int, int]]:
+    os.lseek(fd, 0, os.SEEK_SET)
+    raw = os.read(fd, 256).decode("ascii", "replace").split()
+    try:
+        dev, ino, ctime = (int(x) for x in raw)
+        return dev, ino, ctime
+    except ValueError:
+        return None
+
+
+def _write_record(fd: int, identity: tuple[int, int, int]) -> None:
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, (" ".join(str(x) for x in identity) + "\n").encode())
+    os.fsync(fd)
+
+
+def _clear_stale_socket(path: Path, lock_fd: int) -> None:
+    """Remove `path` only if it is provably a leftover of a previous
+    connector: we hold the lock (so no connector is running) AND the file
+    is exactly the socket the previous connector recorded.
+
+    Connecting to the socket is NOT used as evidence: on macOS a live but
+    busy listener (full backlog) also returns ECONNREFUSED. Regular files,
+    symlinks, directories, other users' files and any socket we did not
+    record are refused, never deleted."""
     try:
         st = os.lstat(path)
     except FileNotFoundError:
@@ -694,44 +741,55 @@ def _clear_stale_socket(path: Path) -> None:
         raise AdminSocketError(f"MCP_ADMIN_SOCKET exists and is not a socket, refusing to delete it: {path}")
     if st.st_uid != os.geteuid():
         raise AdminSocketError(f"MCP_ADMIN_SOCKET is owned by another user: {path}")
-    probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-    probe.settimeout(1)
-    try:
-        probe.connect(str(path))
-    except (ConnectionRefusedError, FileNotFoundError):
-        pass  # stale: left behind by a connector that did not shut down cleanly
-    except OSError as e:
-        raise AdminSocketError(f"cannot tell whether {path} is in use ({e}); refusing to remove it")
-    else:
-        raise AdminSocketError(f"another process is already serving {path}; is the connector running twice?")
-    finally:
-        probe.close()
-    # Re-check right before unlinking that it is still the same inode.
-    st2 = os.lstat(path)
-    if (st2.st_dev, st2.st_ino) != (st.st_dev, st.st_ino):
-        raise AdminSocketError(f"{path} changed while checking it; refusing to remove it")
+    if _read_record(lock_fd) != _identity(st):
+        raise AdminSocketError(
+            f"{path} is a socket this connector did not create; refusing to remove it. "
+            "If nothing uses it, delete it by hand.")
     path.unlink()
 
 
-def bind_admin_socket(path: Path):
-    """Bind the local admin socket safely. Returns (socket, identity) so
-    shutdown removes only the file this process created. Identity includes
-    the nanosecond ctime because filesystems reuse inode numbers at once."""
+class AdminSocket:
+    """The bound admin socket plus the lock that proves it is ours. Keep the
+    object alive for the life of the server: closing it releases the lock."""
+
+    def __init__(self, sock, identity: tuple[int, int, int], lock_fd: int):
+        self.sock, self.identity, self.lock_fd = sock, identity, lock_fd
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        finally:
+            if self.lock_fd >= 0:
+                os.close(self.lock_fd)
+                self.lock_fd = -1
+
+
+def bind_admin_socket(path: Path) -> AdminSocket:
+    """Bind the local admin socket safely. The returned identity lets
+    shutdown remove only the file this process created; it includes the
+    nanosecond ctime because filesystems reuse inode numbers at once."""
     import socket as _socket
     if len(str(path).encode()) > 100:  # macOS sun_path limit is 104 bytes
         raise AdminSocketError(f"MCP_ADMIN_SOCKET path too long for a Unix socket: {path}")
     _prepare_admin_dir(path.parent)
-    _clear_stale_socket(path)
-    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-    old_umask = os.umask(0o177)  # socket file created 0600
+    lock_fd = _open_lock(path.with_name(path.name + ".lock"))
     try:
-        sock.bind(str(path))  # fails (EADDRINUSE) if anything appeared at path meanwhile
-    except OSError as e:
-        sock.close()
-        raise AdminSocketError(f"cannot bind {path}: {e}")
-    finally:
-        os.umask(old_umask)
-    return sock, _identity(os.lstat(path))
+        _clear_stale_socket(path, lock_fd)
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        old_umask = os.umask(0o177)  # socket file created 0600
+        try:
+            sock.bind(str(path))  # fails (EADDRINUSE) if anything appeared at path meanwhile
+        except OSError as e:
+            sock.close()
+            raise AdminSocketError(f"cannot bind {path}: {e}")
+        finally:
+            os.umask(old_umask)
+        identity = _identity(os.lstat(path))
+        _write_record(lock_fd, identity)
+        return AdminSocket(sock, identity, lock_fd)
+    except BaseException:
+        os.close(lock_fd)
+        raise
 
 
 def _identity(st: os.stat_result) -> tuple[int, int, int]:
@@ -791,10 +849,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     identity = None
     if cfg.admin_socket:
         try:
-            admin_sock, identity = bind_admin_socket(cfg.admin_socket)
+            admin = bind_admin_socket(cfg.admin_socket)  # holds the lock until exit
         except AdminSocketError as e:
             sys.exit(f"Refusing to start: {e}")
-        sockets.append(admin_sock)
+        identity = admin.identity
+        sockets.append(admin.sock)
 
     inner = mcp.streamable_http_app()
     path = mcp.settings.streamable_http_path

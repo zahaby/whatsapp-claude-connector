@@ -10,6 +10,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -32,9 +34,63 @@ def mode(p: Path) -> int:
 
 
 def stale_socket(path: Path) -> None:
+    """A socket file this connector did NOT create (no lock-file record)."""
     s = socket.socket(socket.AF_UNIX)
     s.bind(str(path))
     s.close()  # file stays, nobody listening
+
+
+def fill_backlog(path: Path) -> list:
+    """Queue unaccepted connections until the listener refuses more, then
+    prove it is busy: a further connect must fail (ECONNREFUSED on macOS,
+    EAGAIN on Linux). Returns the queued clients so the test can drain."""
+    clients = []
+    for _ in range(256):
+        c = socket.socket(socket.AF_UNIX)
+        c.setblocking(False)
+        try:
+            c.connect(str(path))
+            clients.append(c)
+        except OSError:
+            c.close()
+            break
+    probe = socket.socket(socket.AF_UNIX)
+    probe.setblocking(False)
+    with pytest.raises(OSError):
+        probe.connect(str(path))  # busy: a connect-based staleness test would be fooled
+    probe.close()
+    return clients
+
+
+def drain(listener, clients) -> None:
+    listener.setblocking(False)
+    for _ in clients:
+        try:
+            listener.accept()[0].close()
+        except BlockingIOError:
+            break
+    for c in clients:
+        c.close()
+
+
+CHILD = textwrap.dedent("""
+    import sys, time
+    sys.path.insert(0, sys.argv[2])
+    from pathlib import Path
+    from server import bind_admin_socket
+    a = bind_admin_socket(Path(sys.argv[1]))
+    a.sock.listen(1)
+    print("ready", flush=True)
+    time.sleep(60)
+""")
+
+
+def spawn_connector(path: Path) -> subprocess.Popen:
+    """A separate process that binds the socket the way the server does."""
+    child = subprocess.Popen([sys.executable, "-c", CHILD, str(path), str(SERVER.parent)],
+                             stdout=subprocess.PIPE, text=True)
+    assert child.stdout.readline().strip() == "ready"
+    return child
 
 
 # ---- refused: never deleted -------------------------------------------------
@@ -84,19 +140,80 @@ def test_directory_is_refused(base):
     assert (d / "keep").exists()
 
 
-def test_live_socket_is_refused_and_keeps_working(base):
+def test_busy_live_connector_socket_never_deleted(base):
+    # Regression: a connector whose backlog is full answers ECONNREFUSED on
+    # macOS, exactly like a stale socket. It must still never be deleted.
+    path = base / "admin.sock"
+    child = spawn_connector(path)
+    try:
+        before = os.lstat(path)
+        clients = fill_backlog(path)
+        with pytest.raises(AdminSocketError, match="lock is held"):
+            bind_admin_socket(path)
+        after = os.lstat(path)
+        assert (after.st_ino, after.st_ctime_ns) == (before.st_ino, before.st_ctime_ns)
+        for c in clients:
+            c.close()
+    finally:
+        child.terminate()
+        child.wait(5)
+
+
+def test_second_instance_in_same_process_refused(base):
+    path = base / "admin.sock"
+    first = bind_admin_socket(path)
+    try:
+        first.sock.listen(1)
+        with pytest.raises(AdminSocketError, match="lock is held"):
+            bind_admin_socket(path)
+        c = socket.socket(socket.AF_UNIX)
+        c.connect(str(path))  # first instance untouched
+        first.sock.accept()[0].close()
+        c.close()
+    finally:
+        first.close()
+
+
+def test_busy_foreign_socket_never_deleted(base):
+    # A live listener this connector did not create, with a full backlog.
     path = base / "admin.sock"
     live = socket.socket(socket.AF_UNIX)
     live.bind(str(path))
     live.listen(1)
     try:
-        with pytest.raises(AdminSocketError, match="already serving"):
+        clients = fill_backlog(path)
+        with pytest.raises(AdminSocketError, match="did not create"):
             bind_admin_socket(path)
+        assert stat.S_ISSOCK(os.lstat(path).st_mode)
+        drain(live, clients)
         c = socket.socket(socket.AF_UNIX)
-        c.connect(str(path))  # still reachable: we did not unlink it
+        c.connect(str(path))  # still the same live socket
         c.close()
     finally:
         live.close()
+
+
+def test_foreign_stale_socket_refused_and_kept(base):
+    path = base / "admin.sock"
+    stale_socket(path)
+    with pytest.raises(AdminSocketError, match="did not create"):
+        bind_admin_socket(path)
+    assert stat.S_ISSOCK(os.lstat(path).st_mode)
+
+
+def test_lock_file_symlink_refused(base):
+    target = base / "victim.txt"
+    target.write_text("precious")
+    (base / "admin.sock.lock").symlink_to(target)
+    with pytest.raises(AdminSocketError, match="lock file"):
+        bind_admin_socket(base / "admin.sock")
+    assert target.read_text() == "precious"
+
+
+def test_lock_file_directory_refused(base):
+    (base / "admin.sock.lock").mkdir()
+    with pytest.raises(AdminSocketError, match="lock file"):
+        bind_admin_socket(base / "admin.sock")
 
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="needs root to create another user's file")
@@ -111,28 +228,40 @@ def test_other_users_socket_is_refused(base):
 
 # ---- stale socket: the one thing that may be removed ------------------------
 
-def test_stale_socket_is_replaced(base):
+def test_own_socket_left_by_killed_connector_is_replaced(base):
     path = base / "admin.sock"
-    stale_socket(path)
-    old_ino = os.lstat(path).st_ino
-    sock, identity = bind_admin_socket(path)
+    child = spawn_connector(path)
+    old = os.lstat(path)
+    child.kill()  # SIGKILL: no cleanup ran, socket file remains, kernel drops the lock
+    child.wait(5)
+    assert stat.S_ISSOCK(os.lstat(path).st_mode)
+    a = bind_admin_socket(path)
     try:
-        assert identity[1] == os.lstat(path).st_ino
+        assert (a.identity[1], a.identity[2]) != (old.st_ino, old.st_ctime_ns)
         assert mode(path) == 0o600
-        sock.listen(1)
+        a.sock.listen(1)
         c = socket.socket(socket.AF_UNIX)
         c.connect(str(path))
+        a.sock.accept()[0].close()
         c.close()
     finally:
-        sock.close()
-    assert old_ino is not None
+        a.close()
+
+
+def test_own_leftover_replaced_by_other_socket_is_refused(base):
+    path = base / "admin.sock"
+    bind_admin_socket(path).close()  # simulate a crash: lock released, file left
+    path.unlink()
+    stale_socket(path)              # someone else's socket now sits there
+    with pytest.raises(AdminSocketError, match="did not create"):
+        bind_admin_socket(path)
+    assert path.exists()
 
 
 # ---- directory permissions --------------------------------------------------
 
 def test_missing_directory_created_0700(base):
-    sock, _ = bind_admin_socket(base / "new" / "run" / "admin.sock")
-    sock.close()
+    bind_admin_socket(base / "new" / "run" / "admin.sock").close()
     assert mode(base / "new" / "run") == 0o700
 
 
@@ -140,8 +269,7 @@ def test_existing_private_directory_mode_untouched(base):
     d = base / "shared-ish"
     d.mkdir()
     os.chmod(d, 0o755)
-    sock, _ = bind_admin_socket(d / "admin.sock")
-    sock.close()
+    bind_admin_socket(d / "admin.sock").close()
     assert mode(d) == 0o755  # not silently tightened (or loosened)
 
 
@@ -177,16 +305,18 @@ def test_directory_path_is_a_file_refused(base):
 
 def test_shutdown_removes_own_socket(base):
     path = base / "admin.sock"
-    sock, identity = bind_admin_socket(path)
-    sock.close()
+    a = bind_admin_socket(path)
+    identity = a.identity
+    a.close()
     remove_admin_socket(path, identity)
     assert not path.exists()
 
 
 def test_shutdown_leaves_replacement_file_alone(base):
     path = base / "admin.sock"
-    sock, identity = bind_admin_socket(path)
-    sock.close()
+    a = bind_admin_socket(path)
+    identity = a.identity
+    a.close()
     path.unlink()
     path.write_text("someone else's file")
     remove_admin_socket(path, identity)
@@ -195,8 +325,9 @@ def test_shutdown_leaves_replacement_file_alone(base):
 
 def test_shutdown_leaves_replacement_socket_alone(base):
     path = base / "admin.sock"
-    sock, identity = bind_admin_socket(path)
-    sock.close()
+    a = bind_admin_socket(path)
+    identity = a.identity
+    a.close()
     path.unlink()
     stale_socket(path)  # a different socket at the same path
     remove_admin_socket(path, identity)

@@ -8,6 +8,7 @@ rotation and the send switch are checked against a live HTTP process.
 
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -140,6 +141,18 @@ def running(env, request):
     return env
 
 
+# The exact tokens install.sh substitutes. Checking for a bare "__" would
+# misfire on legitimate paths that contain double underscores.
+PLIST_PLACEHOLDERS = ("__HOME__", "__REPO__", "__UPSTREAM__", "__CLOUDFLARED__")
+
+
+def test_placeholder_list_matches_templates():
+    found = set()
+    for t in (ROOT / "launchd").glob("*.plist"):
+        found |= set(re.findall(r"__[A-Z]+__", t.read_text()))
+    assert found == set(PLIST_PLACEHOLDERS)
+
+
 # ---- Finding 1: fresh install must not exit before creating services -------
 
 def fake_upstream(env: Env, main_go: str):
@@ -159,7 +172,9 @@ def test_install_fresh_without_hostname_completes(env):
     plists = sorted(p.name for p in (env.home / "Library/LaunchAgents").glob("*.plist"))
     assert plists == ["com.wa.bridge.plist", "com.wa.connector.plist", "com.wa.tunnel.plist"]
     for p in (env.home / "Library/LaunchAgents").glob("*.plist"):
-        assert "__" not in p.read_text(), f"unrendered placeholder in {p.name}"
+        text = p.read_text()
+        for placeholder in PLIST_PLACEHOLDERS:
+            assert placeholder not in text, f"unrendered {placeholder} in {p.name}"
 
     assert len(env.get("MCP_AUTH_TOKEN")) == 43
     assert env.get("MCP_PUBLIC_HOSTNAME") == ""
@@ -169,6 +184,20 @@ def test_install_fresh_without_hostname_completes(env):
     assert 'fmt.Sprintf("127.0.0.1:%d", port)' in patched
     assert "sender" not in patched.split("// Start the server")[0].split("Log based on message type")[1]
     assert not list(main_go.parent.glob("*.bak"))
+
+
+def test_install_under_path_with_double_underscores(env):
+    # Regression: a bare "__" check falsely failed for such paths.
+    env.home = env.tmp / "my__home__dir"
+    env.home.mkdir()
+    env.vars["HOME"] = str(env.home)
+    fake_upstream(env, (FIXTURES / "upstream_main.go.txt").read_text())
+    r = env.run("install.sh")
+    assert r.returncode == 0, r.stdout + r.stderr
+    plist = (env.home / "Library/LaunchAgents/com.wa.connector.plist").read_text()
+    assert "my__home__dir/Library/Logs" in plist
+    for placeholder in PLIST_PLACEHOLDERS:
+        assert placeholder not in plist
 
 
 def test_install_rerun_keeps_token(env):
