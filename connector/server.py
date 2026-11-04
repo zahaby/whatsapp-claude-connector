@@ -587,24 +587,44 @@ class TokenGate:
             return False
         return any(addr in n for n in self.networks)
 
-    DRAIN_LIMIT = 1 << 20
+    DRAIN_LIMIT = 1 << 20     # bytes
+    DRAIN_TIMEOUT_S = 1.0     # total time a rejected request may take to deliver its body
+
+    async def _drain(self, receive) -> bool:
+        """Read and discard the request body, bounded in BOTH size and time.
+        True if the whole body arrived. A client that withholds or trickles
+        its body (to tie up connections) gets False after DRAIN_TIMEOUT_S."""
+        import asyncio
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.DRAIN_TIMEOUT_S
+        drained = 0
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            try:
+                msg = await asyncio.wait_for(receive(), remaining)
+            except asyncio.TimeoutError:
+                return False
+            if msg["type"] != "http.request":   # client disconnected
+                return False
+            drained += len(msg.get("body", b""))
+            if drained > self.DRAIN_LIMIT:
+                return False
+            if not msg.get("more_body"):
+                return True
 
     async def _reply(self, send, status: int, body: bytes = b"", receive=None) -> None:
-        # Read (and discard) the request body first, up to a limit. Closing a
-        # socket with unread data makes Windows send a TCP reset, which cuts
-        # off this response mid-way on the client side.
-        if receive is not None:
-            drained = 0
-            while drained <= self.DRAIN_LIMIT:
-                msg = await receive()
-                if msg["type"] != "http.request":
-                    break
-                drained += len(msg.get("body", b""))
-                if not msg.get("more_body"):
-                    break
-        await send({"type": "http.response.start", "status": status,
-                    "headers": [(b"content-type", b"text/plain"), (b"cache-control", b"no-store"),
-                                (b"content-length", str(len(body)).encode())]})
+        # Drain first: closing a socket with unread data makes Windows (and
+        # Linux) send a TCP reset that cuts this response short. If the body
+        # does not arrive in time, answer anyway and close the connection
+        # rather than wait: a slow or missing body must not hold it open.
+        complete = await self._drain(receive) if receive is not None else True
+        headers = [(b"content-type", b"text/plain"), (b"cache-control", b"no-store"),
+                   (b"content-length", str(len(body)).encode())]
+        if not complete:
+            headers.append((b"connection", b"close"))
+        await send({"type": "http.response.start", "status": status, "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
     async def __call__(self, scope, receive, send):
@@ -778,6 +798,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         proxy_headers=False,
         log_config=None if args.log_file else uvicorn.config.LOGGING_CONFIG,  # None: use our file handler
         ssl_certfile=str(tls_files.cert), ssl_keyfile=str(tls_files.key),
+        # Bound graceful shutdown: an idle or stalled client must not block a
+        # restart (token rotation, sending switch) by keeping a socket open.
+        timeout_graceful_shutdown=3,
     ))
     try:
         server.run(sockets=sockets)
