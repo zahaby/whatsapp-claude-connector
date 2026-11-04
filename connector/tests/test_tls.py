@@ -232,7 +232,7 @@ def _check_rendered(cfg_text: str, port: int, cert: Path):
     assert "noTLSVerify: false" in cfg_text
     for placeholder in ("__TUNNEL_ID__", "__HOME__", "__HOSTNAME__", "__PORT__", "__CA_POOL__"):
         assert placeholder not in cfg_text
-    assert "tunnel: tid-123" in cfg_text
+    assert "tunnel: 8f3569a9-6bc5-4355-924d-ba2d2cae182b" in cfg_text
 
 
 @pytest.mark.skipif(IS_WINDOWS or shutil.which("bash") is None, reason="macOS script")

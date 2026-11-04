@@ -10,7 +10,11 @@ NAME=wa-connector
 [ -f "$HOME/.cloudflared/cert.pem" ] || cloudflared tunnel login   # browser login, owner does this
 mkdir -p "$HOME/.cloudflared"
 cloudflared tunnel info "$NAME" >/dev/null 2>&1 || cloudflared tunnel create "$NAME"
-TUNNEL_ID="$(cloudflared tunnel info "$NAME" -o json | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
+# Options must come BEFORE the tunnel name: cloudflared stops reading flags
+# at the first plain argument ("accepts exactly one argument" otherwise).
+TUNNEL_ID="$(cloudflared tunnel info -o json "$NAME" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')" \
+  || die "could not read the tunnel id (cloudflared tunnel info -o json $NAME)"
+[[ "$TUNNEL_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "unexpected tunnel id: $TUNNEL_ID"
 cloudflared tunnel route dns "$NAME" "$HOSTNAME"
 sed -e "s|__TUNNEL_ID__|$TUNNEL_ID|g" -e "s|__HOME__|$HOME|g" -e "s|__HOSTNAME__|$HOSTNAME|g" \
   -e "s|__PORT__|$(env_get MCP_PORT)|g" -e "s|__CA_POOL__|$CA_POOL|g" \

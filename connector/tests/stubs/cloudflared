@@ -1,8 +1,23 @@
 #!/usr/bin/env bash
-# Test double for cloudflared: records calls; `tunnel info NAME -o json`
-# prints a fixed tunnel id like the real tool.
+# Test double for cloudflared. Records calls. Parses `tunnel info` the way
+# the real tool does (urfave/cli): options are read only until the first
+# plain argument; anything after it counts as an extra argument and is
+# refused with the real error. `-o json` prints a tunnel id.
 echo "cloudflared $*" >> "$STUB_STATE/calls"
-case " $* " in
-  *" -o json "*) echo '{"id":"tid-123","name":"wa-connector"}' ;;
-esac
+if [ "${1:-}" = tunnel ] && [ "${2:-}" = info ]; then
+  shift 2
+  json=0; positional=()
+  while [ $# -gt 0 ]; do
+    if [ ${#positional[@]} -eq 0 ] && [[ "$1" == -* ]]; then
+      case "$1" in -o|--output) [ "${2:-}" = json ] && json=1; shift 2 ;; *) shift ;; esac
+    else
+      positional+=("$1"); shift
+    fi
+  done
+  if [ ${#positional[@]} -ne 1 ]; then
+    echo '"cloudflared tunnel info" accepts exactly one argument, the ID or name of the tunnel to get info about.' >&2
+    exit 1
+  fi
+  [ $json = 1 ] && echo '{"id":"8f3569a9-6bc5-4355-924d-ba2d2cae182b","name":"wa-connector"}'
+fi
 exit 0
