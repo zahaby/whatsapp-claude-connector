@@ -89,11 +89,15 @@ Once the remote connector works you can remove the local Desktop entry so tools 
 cd connector && uv run --group dev pytest -q
 ```
 
-53 tests, three files:
+72 tests, four files:
 
 * `test_server.py`: send tool absent by default; two-step send (no send on first call, invented / reused /
   expired / mismatched proposals rejected); chat-name resolution; newest messages chosen by real UTC time across
   mixed offsets; unreadable timestamps excluded and reported, never a crash; read-only DB; TokenGate.
+* `test_admin_socket.py`: the local socket never deletes or re-permissions anything it didn't create. Regular
+  files, symlinks, directories, live or other users' sockets are refused; only a verified stale socket of ours is
+  replaced; existing directories keep their mode (group/world-writable ones are refused); shutdown removes only
+  the exact socket this process bound.
 * `test_http.py`: the real server process with the MCP client: no token → 404, token URL → tools and transcript,
   wrong Host → 421, token never in logs; with `MCP_ALLOWED_IPS` set, the local socket still works but the TCP
   port keeps rejecting non-allowlisted callers.

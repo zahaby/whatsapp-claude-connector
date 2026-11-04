@@ -32,6 +32,7 @@ import logging
 import os
 import secrets
 import sqlite3
+import stat
 import sys
 import time
 from collections import defaultdict, deque
@@ -650,30 +651,104 @@ class ListenerRouter:
         return await self.public(scope, receive, send)
 
 
+class AdminSocketError(RuntimeError):
+    """MCP_ADMIN_SOCKET is unsafe to use; the server refuses to start."""
+
+
+def _prepare_admin_dir(directory: Path) -> None:
+    """Create the socket's directory 0700 if missing. An EXISTING directory
+    is never chmod-ed (it may be shared, e.g. /tmp or the user's home); it
+    must be a real directory we own that no one else can write to, because
+    anyone who can write there could swap the socket."""
+    try:
+        directory.mkdir(mode=0o700, parents=True)
+        os.chmod(directory, 0o700)  # mkdir's mode is filtered by umask; this dir is ours
+        return
+    except FileExistsError:
+        pass
+    st = os.lstat(directory)
+    if stat.S_ISLNK(st.st_mode):
+        raise AdminSocketError(f"socket directory is a symlink, refusing: {directory}")
+    if not stat.S_ISDIR(st.st_mode):
+        raise AdminSocketError(f"socket directory is not a directory: {directory}")
+    if st.st_uid != os.geteuid():
+        raise AdminSocketError(f"socket directory is not owned by this user: {directory}")
+    if st.st_mode & 0o022:
+        raise AdminSocketError(
+            f"socket directory is writable by group/others (mode {stat.S_IMODE(st.st_mode):o}): {directory}. "
+            "Use a private directory, e.g. leave MCP_ADMIN_SOCKET unset.")
+
+
+def _clear_stale_socket(path: Path) -> None:
+    """Remove `path` only if it is a socket we own that nothing is serving.
+    Regular files, symlinks (even to sockets), directories, other users'
+    sockets and live sockets are refused, never deleted."""
+    import socket as _socket
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        raise AdminSocketError(f"MCP_ADMIN_SOCKET is a symlink, refusing to touch it: {path}")
+    if not stat.S_ISSOCK(st.st_mode):
+        raise AdminSocketError(f"MCP_ADMIN_SOCKET exists and is not a socket, refusing to delete it: {path}")
+    if st.st_uid != os.geteuid():
+        raise AdminSocketError(f"MCP_ADMIN_SOCKET is owned by another user: {path}")
+    probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    probe.settimeout(1)
+    try:
+        probe.connect(str(path))
+    except (ConnectionRefusedError, FileNotFoundError):
+        pass  # stale: left behind by a connector that did not shut down cleanly
+    except OSError as e:
+        raise AdminSocketError(f"cannot tell whether {path} is in use ({e}); refusing to remove it")
+    else:
+        raise AdminSocketError(f"another process is already serving {path}; is the connector running twice?")
+    finally:
+        probe.close()
+    # Re-check right before unlinking that it is still the same inode.
+    st2 = os.lstat(path)
+    if (st2.st_dev, st2.st_ino) != (st.st_dev, st.st_ino):
+        raise AdminSocketError(f"{path} changed while checking it; refusing to remove it")
+    path.unlink()
+
+
 def bind_admin_socket(path: Path):
+    """Bind the local admin socket safely. Returns (socket, identity) so
+    shutdown removes only the file this process created. Identity includes
+    the nanosecond ctime because filesystems reuse inode numbers at once."""
     import socket as _socket
     if len(str(path).encode()) > 100:  # macOS sun_path limit is 104 bytes
-        sys.exit(f"MCP_ADMIN_SOCKET path too long for a Unix socket: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o700)
-    if path.exists() or path.is_symlink():
-        path.unlink()
+        raise AdminSocketError(f"MCP_ADMIN_SOCKET path too long for a Unix socket: {path}")
+    _prepare_admin_dir(path.parent)
+    _clear_stale_socket(path)
     sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     old_umask = os.umask(0o177)  # socket file created 0600
     try:
-        sock.bind(str(path))
+        sock.bind(str(path))  # fails (EADDRINUSE) if anything appeared at path meanwhile
+    except OSError as e:
+        sock.close()
+        raise AdminSocketError(f"cannot bind {path}: {e}")
     finally:
         os.umask(old_umask)
-    os.chmod(path, 0o600)
-    return sock
+    return sock, _identity(os.lstat(path))
 
 
-def remove_admin_socket(path: Optional[Path]) -> None:
-    if path:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+def _identity(st: os.stat_result) -> tuple[int, int, int]:
+    return (st.st_dev, st.st_ino, st.st_ctime_ns)
+
+
+def remove_admin_socket(path: Optional[Path], identity: Optional[tuple[int, int, int]]) -> None:
+    """Remove the socket on shutdown, but only if it is still the very file
+    this process bound. Anything put there since is left alone."""
+    if not path or not identity:
+        return
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISSOCK(st.st_mode) and _identity(st) == identity:
+        path.unlink()
 
 
 def bind_tcp(host: str, port: int):
@@ -712,24 +787,30 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     import uvicorn
 
+    sockets = [bind_tcp(cfg.host, cfg.port)]
+    identity = None
+    if cfg.admin_socket:
+        try:
+            admin_sock, identity = bind_admin_socket(cfg.admin_socket)
+        except AdminSocketError as e:
+            sys.exit(f"Refusing to start: {e}")
+        sockets.append(admin_sock)
+
     inner = mcp.streamable_http_app()
     path = mcp.settings.streamable_http_path
     app = ListenerRouter(
         public=TokenGate(inner, cfg.auth_token, mcp_path=path, allowed_ips=cfg.allowed_ips),
         local=TokenGate(inner, cfg.auth_token, mcp_path=path, allowed_ips=None),
         admin_socket=cfg.admin_socket,
-        on_shutdown=lambda: remove_admin_socket(cfg.admin_socket),
+        on_shutdown=lambda: remove_admin_socket(cfg.admin_socket, identity),
     )
-    sockets = [bind_tcp(cfg.host, cfg.port)]
-    if cfg.admin_socket:
-        sockets.append(bind_admin_socket(cfg.admin_socket))
     # One server on both sockets: one lifespan, one signal handler.
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False,  # access log would record the token path
                                            proxy_headers=False))
     try:
         server.run(sockets=sockets)
     finally:
-        remove_admin_socket(cfg.admin_socket)
+        remove_admin_socket(cfg.admin_socket, identity)
 
 
 if __name__ == "__main__":
