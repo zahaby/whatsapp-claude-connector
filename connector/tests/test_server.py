@@ -274,6 +274,7 @@ def test_router_sends_only_matching_requests_to_local_gate():
     assert seen == ["public"]  # no admin channel: everything is public
 
 
+@pytest.mark.skipif(__import__("sys").platform == "win32", reason="Unix socket channel is not used on Windows")
 def test_unix_listener_matches_only_exact_socket_path():
     from admin_unix import UnixAdminListener
     listener = UnixAdminListener.__new__(UnixAdminListener)  # matching logic only, no bind

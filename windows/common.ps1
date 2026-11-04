@@ -83,11 +83,26 @@ function Set-EnvValue([string]$Key, [string]$Value) {
     Protect-File $EnvFile
 }
 
-# Owner-only access: remove inherited permissions, grant only the current user.
+# Owner-only access: exactly one rule, Full Control for the current user,
+# inheritance off and nothing copied from the folder. Then READ IT BACK and
+# refuse to continue unless that is precisely what the file now has.
 function Protect-File([string]$Path) {
-    $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $code = Invoke-Native 'icacls.exe' @($Path, '/inheritance:r', '/grant:r', "${me}:(F)", '/q')
-    if ($code -ne 0) { throw "could not restrict permissions on ${Path} (icacls exit $code)" }
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().User   # SID, immune to name formats
+    $acl = New-Object System.Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($me, 'FullControl', 'Allow')
+    $acl.AddAccessRule($rule)
+    [System.IO.File]::SetAccessControl($Path, $acl)   # writes the DACL only
+
+    $actual = [System.IO.File]::GetAccessControl($Path)
+    $rules = @($actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+    $ok = $actual.AreAccessRulesProtected -and $rules.Count -eq 1 -and
+          $rules[0].IdentityReference.Value -eq $me.Value -and -not $rules[0].IsInherited -and
+          $rules[0].AccessControlType -eq 'Allow'
+    if (-not $ok) {
+        $desc = ($rules | ForEach-Object { "$($_.IdentityReference) $($_.AccessControlType) $($_.FileSystemRights) inherited=$($_.IsInherited)" }) -join '; '
+        throw "could not restrict ${Path} to the current user only (now: $desc)"
+    }
 }
 
 function New-Token {
@@ -135,7 +150,7 @@ function Get-ServiceProcesses([string]$Svc) {
     })
 }
 
-function Test-ServiceRunning([string]$Svc) { return (Get-SupervisorProcesses $Svc).Count -gt 0 }
+function Test-ServiceRunning([string]$Svc) { return @(Get-SupervisorProcesses $Svc).Count -gt 0 }
 
 function Wait-Until([scriptblock]$Condition, [double]$Seconds) {
     $deadline = (Get-Date).AddSeconds($Seconds)
@@ -159,7 +174,7 @@ function Stop-WaService([string]$Svc) {
     # Supervisor first, so it cannot restart the service we are stopping.
     foreach ($p in (Get-SupervisorProcesses $Svc)) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
     foreach ($p in (Get-ServiceProcesses $Svc))    { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
-    $gone = Wait-Until { ((Get-SupervisorProcesses $Svc).Count + (Get-ServiceProcesses $Svc).Count) -eq 0 } 10
+    $gone = Wait-Until { (@(Get-SupervisorProcesses $Svc).Count + @(Get-ServiceProcesses $Svc).Count) -eq 0 } 10
     if (-not $gone) { throw "could not stop $Svc (processes still running)" }
 }
 

@@ -152,9 +152,20 @@ def fake_upstream(env: Env, main_go: str) -> Path:
     return bridge / "main.go"
 
 
-def acl_grants(path: Path) -> list[str]:
-    out = subprocess.run(["icacls", str(path)], capture_output=True, text=True).stdout
-    return [line for line in out.splitlines() if ":(" in line]
+def acl_rules(path: Path) -> dict:
+    """Every access rule on `path` (explicit and inherited), plus whether
+    inheritance is blocked and who the current user is, as a SID."""
+    ps = ("$a = [IO.File]::GetAccessControl('%s'); "
+          "$r = @($a.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | "
+          "ForEach-Object { @{ sid = $_.IdentityReference.Value; type = [string]$_.AccessControlType; "
+          "rights = [string]$_.FileSystemRights; inherited = $_.IsInherited } }); "
+          "@{ protected = $a.AreAccessRulesProtected; me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
+          "rules = $r } | ConvertTo-Json -Depth 4 -Compress") % str(path).replace("'", "''")
+    out = subprocess.run([POWERSHELL, "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60)
+    data = json.loads(out.stdout)
+    rules = data["rules"]
+    data["rules"] = rules if isinstance(rules, list) else [rules]
+    return data
 
 
 def test_install_fresh_without_hostname(env):
@@ -165,8 +176,9 @@ def test_install_fresh_without_hostname(env):
     assert len(env.get("MCP_AUTH_TOKEN")) == 43
     raw = env.env_file.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf"), "BOM would corrupt the first .env key"
-    grants = acl_grants(env.env_file)
-    assert len(grants) == 1, grants                    # only the current user
+    acl = acl_rules(env.env_file)
+    assert acl["protected"], acl                        # nothing inherited from the folder
+    assert [(r["sid"], r["type"], r["inherited"]) for r in acl["rules"]] == [(acl["me"], "Allow", False)], acl
     patched = main_go.read_text(encoding="utf-8")
     assert 'fmt.Sprintf("127.0.0.1:%d", port)' in patched
     assert "sender" not in patched.split("// Start the server")[0].split("Log based on message type")[1]
