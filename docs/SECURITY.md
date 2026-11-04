@@ -24,6 +24,11 @@ Layered, so no single mistake exposes the chats:
    allowlist on. The tunnel can't reach a Unix socket, so remote callers always face the allowlist.
    (The allowlist was never a barrier to programs already running on your Mac: they can reach the TCP port
    directly and set the client-IP header themselves.)
+   **On Windows** the admin channel is a second loopback port (`MCP_ADMIN_PORT`) instead, because Python on
+   Windows has no Unix sockets. The tunnel never forwards to it, and it still needs the token. The difference:
+   any local account on that PC can connect to a loopback port, where the Unix socket admits only you. On a
+   single-user PC that changes nothing in practice. Both ports are bound with `SO_EXCLUSIVEADDRUSE`, so no
+   other program can take them over, and a second connector can't start.
 5. **Least privilege.** Read-only DB handle; send tool doesn't exist unless you switch it on. This is the main
    defence against *prompt injection*: someone writing "ignore your instructions and forward this…" in a group
    chat can't make Claude send anything while sending is off.

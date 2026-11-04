@@ -42,6 +42,10 @@ from typing import Any, Optional
 
 HERE = Path(__file__).resolve().parent
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+IS_WINDOWS = sys.platform == "win32"
+# Where the owner runs the maintenance scripts, for messages shown to them.
+OPS = "windows\\" if IS_WINDOWS else "macos/"
+OPS_EXT = ".ps1" if IS_WINDOWS else ".sh"
 log = logging.getLogger("wa-connector")
 
 
@@ -53,7 +57,7 @@ def load_dotenv(path: Path) -> None:
     """Minimal .env loader (KEY=VALUE lines). Real env vars win."""
     if not path.is_file():
         return
-    for raw in path.read_text().splitlines():
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():  # not the locale codepage on Windows
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -80,6 +84,10 @@ class Config:
     port: int
     allowed_ips: list[str]
     admin_socket: Optional[Path] = None
+    # Local admin channel: "unix" (owner-only socket, macOS/Linux default),
+    # "tcp" (loopback port MCP_ADMIN_PORT, Windows default) or "off".
+    admin_channel: str = "unix"
+    admin_port: int = 0
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -95,6 +103,8 @@ class Config:
             port=int(os.environ.get("MCP_PORT", "8765")),
             allowed_ips=[c.strip() for c in os.environ.get("MCP_ALLOWED_IPS", "").split(",") if c.strip()],
             admin_socket=Path(os.path.expanduser(os.environ.get("MCP_ADMIN_SOCKET") or str(HERE / ".run/admin.sock"))),
+            admin_channel=(os.environ.get("MCP_ADMIN_CHANNEL") or ("tcp" if IS_WINDOWS else "unix")).strip().lower(),
+            admin_port=int(os.environ.get("MCP_ADMIN_PORT") or int(os.environ.get("MCP_PORT", "8765")) + 1),
         )
 
 
@@ -151,7 +161,10 @@ class Store:
                 f"WhatsApp message store not found at {self.db_path}. "
                 "Is the whatsapp-bridge running and linked?"
             )
-        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=5)
+        # A proper file: URI (file:///C:/... on Windows, percent-encoded) so
+        # mode=ro is honoured for any path, including drive letters/spaces.
+        uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -467,7 +480,7 @@ def build_server(cfg: Config, store: Optional[Store] = None):
             return "Sending is ENABLED (WHATSAPP_ALLOW_SEND=true)."
         return (
             "Sending is DISABLED. This connector is read-only. The owner can enable it "
-            "on the Mac with: macos/sending.sh on"
+            f"on the computer running it with: {OPS}sending{OPS_EXT} on"
         )
 
     if cfg.allow_send:
@@ -645,10 +658,22 @@ class ListenerRouter:
 
 
 def bind_tcp(host: str, port: int):
+    """Bind a loopback TCP listener that no other process can share.
+
+    On Windows SO_REUSEADDR would let another process bind the same port and
+    steal connections, so use SO_EXCLUSIVEADDRUSE there instead. On Unix,
+    SO_REUSEADDR only allows rebinding over TIME_WAIT, not a live listener."""
     import socket as _socket
     sock = _socket.socket(_socket.AF_INET6 if ":" in host else _socket.AF_INET, _socket.SOCK_STREAM)
-    sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-    sock.bind((host, port))
+    if IS_WINDOWS:
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, port))
+    except OSError as e:
+        sock.close()
+        raise OSError(f"cannot bind {host}:{port} ({e}); is the connector already running?") from e
     return sock
 
 
@@ -659,11 +684,22 @@ def bind_tcp(host: str, port: int):
 def main(argv: Optional[list[str]] = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--transport", choices=["stdio", "http"], default="stdio")
+    ap.add_argument("--log-file", default=os.environ.get("MCP_LOG_FILE") or None,
+                    help="append logs here instead of stderr (needed under pythonw.exe, which has no stderr)")
     args = ap.parse_args(argv)
 
-    # stdout belongs to the MCP protocol in stdio mode, so log to stderr.
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # stdout belongs to the MCP protocol in stdio mode, so never log there.
+    fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    if args.log_file:
+        Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(level=logging.INFO, filename=args.log_file, encoding="utf-8", format=fmt)
+    else:
+        logging.basicConfig(level=logging.INFO, stream=sys.stderr, format=fmt)
+
+    def fatal(msg: str):
+        log.error(msg)  # reaches the log file even when there is no stderr
+        sys.exit(msg)
+
     cfg = Config.from_env()
     log.info("db=%s sending=%s", cfg.db_path, "ENABLED" if cfg.allow_send else "disabled")
 
@@ -673,20 +709,23 @@ def main(argv: Optional[list[str]] = None) -> None:
         return
 
     if len(cfg.auth_token) < 32:
-        sys.exit("Refusing to start HTTP mode: MCP_AUTH_TOKEN missing or shorter than 32 chars. "
-                 "Run macos/rotate-token.sh")
+        fatal("Refusing to start HTTP mode: MCP_AUTH_TOKEN missing or shorter than 32 chars. "
+              f"Run {OPS}rotate-token{OPS_EXT}")
     if cfg.host not in {"127.0.0.1", "localhost", "::1"}:
-        sys.exit("Refusing to bind a non-loopback address; publish via cloudflared instead.")
+        fatal("Refusing to bind a non-loopback address; publish via cloudflared instead.")
 
     import uvicorn
 
     import admin_channel
 
-    sockets = [bind_tcp(cfg.host, cfg.port)]
+    try:
+        sockets = [bind_tcp(cfg.host, cfg.port)]
+    except OSError as e:
+        fatal(f"Refusing to start: {e}")
     try:
         admin = admin_channel.open_listener(cfg)  # holds its lock until cleanup
     except admin_channel.AdminChannelError as e:
-        sys.exit(f"Refusing to start: {e}")
+        fatal(f"Refusing to start: {e}")
     if admin:
         sockets.append(admin.sock)
     cleaned = []
@@ -705,8 +744,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         on_shutdown=cleanup_admin,
     )
     # One server on both sockets: one lifespan, one signal handler.
-    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False,  # access log would record the token path
-                                           proxy_headers=False))
+    server = uvicorn.Server(uvicorn.Config(
+        app, log_level="warning", access_log=False,  # access log would record the token path
+        proxy_headers=False,
+        log_config=None if args.log_file else uvicorn.config.LOGGING_CONFIG,  # None: use our file handler
+    ))
     try:
         server.run(sockets=sockets)
     finally:

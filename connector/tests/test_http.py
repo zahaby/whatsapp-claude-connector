@@ -38,12 +38,18 @@ def _get(url, headers=None, data=None):
         return e.code, e.read()
 
 
+IS_WINDOWS = sys.platform == "win32"
+
+
 def _start(db, tmp_path, **extra):
     port = _free_port()
-    sock_dir = Path(tempfile.mkdtemp(prefix="wa", dir="/tmp"))
+    # Short dir: Unix socket paths are limited to ~104 bytes on macOS.
+    sock_dir = Path(tempfile.mkdtemp(prefix="wa", dir=None if IS_WINDOWS else "/tmp"))
+    admin = {"MCP_ADMIN_CHANNEL": "tcp", "MCP_ADMIN_PORT": str(_free_port())} if IS_WINDOWS else \
+            {"MCP_ADMIN_SOCKET": str(sock_dir / "admin.sock")}
     env = {**os.environ, "WA_CONFIG": str(tmp_path / "none"), "WA_DB_PATH": str(db),
            "MCP_AUTH_TOKEN": TOKEN, "MCP_PORT": str(port), "MCP_PUBLIC_HOSTNAME": "wa.example.com",
-           "WHATSAPP_ALLOW_SEND": "false", "MCP_ADMIN_SOCKET": str(sock_dir / "admin.sock"), **extra}
+           "WHATSAPP_ALLOW_SEND": "false", **admin, **extra}
     proc = subprocess.Popen([sys.executable, str(SERVER), "--transport", "http"], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     base = f"http://127.0.0.1:{port}"
@@ -68,6 +74,7 @@ def server(db, tmp_path):
     shutil.rmtree(sock_dir, ignore_errors=True)
 
 
+@pytest.mark.skipif(IS_WINDOWS, reason="Unix socket; the TCP channel is covered in test_admin_tcp.py")
 def test_admin_socket_bypasses_allowlist_only_locally(db, tmp_path):
     base, proc, sock_dir = _start(db, tmp_path, MCP_ALLOWED_IPS="160.79.104.0/21")
     try:

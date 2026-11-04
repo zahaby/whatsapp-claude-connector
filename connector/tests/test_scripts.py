@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "macos"
 STUBS = Path(__file__).resolve().parent / "stubs"
@@ -29,7 +30,10 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 # CI on macOS sets WA_TEST_BASH=/bin/bash to test the stock bash 3.2 users actually have.
 BASH = os.environ.get("WA_TEST_BASH", "bash")
-pytestmark = pytest.mark.skipif(shutil.which(BASH) is None, reason="needs bash")
+pytestmark = [
+    pytest.mark.skipif(sys.platform == "win32", reason="macOS bash scripts; Windows has test_scripts_windows.py"),
+    pytest.mark.skipif(shutil.which(BASH) is None, reason="needs bash"),
+]
 
 
 def free_port() -> int:

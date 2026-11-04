@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.skipif(__import__("sys").platform == "win32", reason="Unix socket admin channel (macOS/Linux)")
+
 from admin_unix import AdminSocketError, bind_admin_socket, remove_admin_socket
 
 SERVER = Path(__file__).resolve().parents[1] / "server.py"

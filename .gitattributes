@@ -1,0 +1,6 @@
+# macOS/Linux scripts and the launchctl test stub must keep LF.
+*.sh                       text eol=lf
+connector/tests/stubs/*    text eol=lf
+# Windows scripts and stubs: CRLF (cmd.exe requires it for .cmd).
+*.ps1                      text eol=crlf
+*.cmd                      text eol=crlf

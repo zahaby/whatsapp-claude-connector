@@ -39,8 +39,9 @@ connector/                   SHARED CORE (Python, any OS)
   verify.py                  checks what the RUNNING connector enforces, via the admin channel
   admin_channel.py           picks the OS-specific local admin channel
   admin_unix.py              macOS/Linux: owner-only Unix socket + lock file
+  admin_tcp.py               Windows: loopback admin port the tunnel never forwards to
   .env.example               all settings; real .env is owner-only and git-ignored
-  tests/                     pytest: core, HTTP integration, admin channel, macOS scripts
+  tests/                     pytest: core, HTTP, both admin channels, macOS + Windows scripts
 config/cloudflared.yml       tunnel ingress (shared): only /mcp* and /healthz forwarded
 macos/                       macOS PLATFORM LAYER
   install.sh                 clone+pin upstream, patch, build, venv, token, launchd
@@ -52,7 +53,13 @@ macos/                       macOS PLATFORM LAYER
   connector-url.sh           copies the secret connector URL to the clipboard (--print to show)
   launchd/*.plist            bridge, connector, tunnel as login services (auto-restart)
   claude_desktop_config.example.json
-docs/HANDOVER.md             one-page restart / re-link note
+windows/                     WINDOWS PLATFORM LAYER (Windows PowerShell 5.1, no admin rights)
+  install.ps1 link-whatsapp.ps1 setup-tunnel.ps1 start.ps1 stop.ps1 status.ps1
+  sending.ps1 rotate-token.ps1 connector-url.ps1   same behaviour as the macOS scripts
+  supervise.ps1              keeps a service running, restarts it if it crashes
+  common.ps1                 shared helpers
+docs/HANDOVER.md             one-page restart / re-link note (macOS)
+docs/HANDOVER-windows.md     the same for Windows
 docs/SECURITY.md             answers: securing the endpoint; no access to messages
 ```
 
@@ -89,6 +96,39 @@ It syncs to the iPhone app. Test from iPhone voice mode: *"Summarise my Family W
 Once the remote connector works you can remove the local Desktop entry so tools aren't listed twice. Desktop sees the remote connector too.
 
 **4. Sending (criterion 3).** Off by default. `macos/sending.sh on` / `off` / `status`. Details in docs/HANDOVER.md.
+
+## Windows
+
+Same features and safety rules as on the Mac; only the platform layer differs.
+
+Prereqs (then open a **new** PowerShell window so PATH updates):
+
+```powershell
+winget install -e --id Git.Git; winget install -e --id GoLang.Go; winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT; winget install -e --id astral-sh.uv; winget install -e --id Cloudflare.cloudflared
+```
+
+```powershell
+git clone <this repo> $HOME\wa-connector; cd $HOME\wa-connector; powershell -ExecutionPolicy Bypass -File windows\install.ps1
+```
+
+Then the same four steps as on the Mac, with `windows\<name>.ps1` instead of `macos/<name>.sh`:
+`link-whatsapp.ps1` (owner scans the QR), merge the printed snippet into `%APPDATA%\Claude\claude_desktop_config.json`,
+`setup-tunnel.ps1 wa.yourdomain.com`, `start.ps1`, `connector-url.ps1`. Send switch: `sending.ps1 on|off|status`.
+Run them as `powershell -ExecutionPolicy Bypass -File windows\<name>.ps1 ...` unless your execution policy allows local scripts.
+
+How it differs from macOS, and why:
+
+| | macOS | Windows |
+|---|---|---|
+| Background services | launchd agents | hidden `supervise.ps1` per service (restarts on crash) + a Startup-folder shortcut. No admin rights, no Task Scheduler. |
+| Local admin channel | owner-only Unix socket | loopback port `MCP_ADMIN_PORT` (default `MCP_PORT`+1), bound exclusively. Python on Windows has no Unix sockets. |
+| `.env` protection | `chmod 600` | ACL: inheritance removed, only your account |
+| Bridge build | `go build` | `go build` with `CGO_ENABLED=1` and gcc (WinLibs) |
+
+Not covered by CI on Windows: the real WhatsApp bridge and Cloudflare tunnel binaries (the tests run the real
+connector, supervisor, start/stop, rotation and send switch). Check once on the PC:
+`windows\start.ps1`, `windows\rotate-token.ps1`, `windows\sending.ps1 on`, `windows\sending.ps1 off`, `windows\status.ps1`.
+Each must print `Verified` / `running`.
 
 ## Tests
 
