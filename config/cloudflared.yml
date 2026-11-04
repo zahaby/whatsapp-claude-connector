@@ -1,0 +1,9 @@
+# Template: scripts/setup-tunnel.sh renders it to ~/.cloudflared/wa-connector.yml
+tunnel: __TUNNEL_ID__
+credentials-file: __HOME__/.cloudflared/__TUNNEL_ID__.json
+ingress:
+  # Only the MCP path and the health check are forwarded; everything else 404s at the edge.
+  - hostname: __HOSTNAME__
+    path: ^/(mcp(/.*)?|healthz)$
+    service: http://127.0.0.1:__PORT__
+  - service: http_status:404

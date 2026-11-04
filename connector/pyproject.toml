@@ -1,0 +1,16 @@
+[project]
+name = "whatsapp-family-connector"
+version = "0.1.0"
+description = "Read-only-by-default MCP connector over lharries/whatsapp-mcp, with token-gated remote mode"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.12,<2",   # FastMCP + Streamable HTTP; mcp 2.x renamed FastMCP
+    "requests>=2.32",
+    "uvicorn>=0.30",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

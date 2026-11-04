@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "whatsapp-family": {
+      "command": "/Users/YOU/wa-connector/connector/.venv/bin/python",
+      "args": ["/Users/YOU/wa-connector/connector/server.py", "--transport", "stdio"]
+    }
+  }
+}
