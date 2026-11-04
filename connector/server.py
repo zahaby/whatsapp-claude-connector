@@ -38,7 +38,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 HERE = Path(__file__).resolve().parent
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -153,10 +153,19 @@ def parse_ts(value: Any) -> Optional[datetime]:
 
 class Store:
     """Opens messages.db with mode=ro. There is no code path in this class
-    that writes to the database."""
+    that writes to the database.
 
-    def __init__(self, db_path: Path):
+    Names: WhatsApp increasingly identifies people by an anonymous "LID"
+    instead of their phone number, so senders and some direct chats arrive
+    as long numbers. The WhatsApp library's own session database
+    (whatsapp.db, next to messages.db) records the LID -> phone mapping and
+    contact names; this class reads ONLY those two tables from it, read-only,
+    to turn numbers back into names. If that database or its tables are
+    missing or busy, names fall back to the chat list, never an error."""
+
+    def __init__(self, db_path: Path, session_db_path: Optional[Path] = None):
         self.db_path = db_path
+        self.session_db_path = session_db_path or db_path.with_name("whatsapp.db")
 
     def _conn(self) -> sqlite3.Connection:
         if not self.db_path.exists():
@@ -179,12 +188,17 @@ class Store:
         SQL ORDER BY on them is not chronological. Unknown times sort last."""
         with self._conn() as c:
             rows = c.execute("SELECT jid, name, last_message_time FROM chats").fetchall()
+            name_of = self._names(c)
         out = []
         for r in rows:
             ts = parse_ts(r["last_message_time"])
+            user = r["jid"].split("@")[0]
+            name = r["name"]
+            if (not name or name == user) and not r["jid"].endswith("@g.us"):
+                name = name_of(user) or name   # LID-only direct chats get a real name too
             out.append({
                 "jid": r["jid"],
-                "name": r["name"] or r["jid"].split("@")[0],
+                "name": name or user,
                 "is_group": r["jid"].endswith("@g.us"),
                 "last_message_time": ts.isoformat() if ts else None,
                 "_ts": ts,
@@ -218,13 +232,74 @@ class Store:
 
     # -- messages -----------------------------------------------------------
 
-    def _sender_names(self, conn: sqlite3.Connection) -> dict[str, str]:
-        """Map phone number (JID user part) -> saved name, using direct chats."""
-        out: dict[str, str] = {}
-        for r in conn.execute("SELECT jid, name FROM chats WHERE jid LIKE '%@s.whatsapp.net'"):
-            if r["name"]:
-                out[r["jid"].split("@")[0]] = r["name"]
-        return out
+    def _session_tables(self) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+        """({full jid: {field: value}}, {lid user: phone user}) from the
+        WhatsApp library's session DB, read-only. Empty on any problem."""
+        contacts: dict[str, dict[str, str]] = {}
+        lid_to_pn: dict[str, str] = {}
+        path = self.session_db_path
+        if not path or not path.exists():
+            return contacts, lid_to_pn
+        try:
+            conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+            conn.row_factory = sqlite3.Row
+            try:
+                for r in conn.execute("SELECT their_jid, first_name, full_name, push_name, business_name "
+                                      "FROM whatsmeow_contacts"):
+                    if r["their_jid"]:
+                        contacts[r["their_jid"]] = {k: (r[k] or "").strip() for k in
+                                                    ("first_name", "full_name", "push_name", "business_name")}
+                for r in conn.execute("SELECT lid, pn FROM whatsmeow_lid_map"):
+                    if r["lid"] and r["pn"]:
+                        lid_to_pn[r["lid"]] = r["pn"]
+            finally:
+                conn.close()
+        except sqlite3.Error as e:  # old library without the tables, locked DB, ...
+            log.warning("contact names unavailable from session DB: %s", e)
+        return contacts, lid_to_pn
+
+    def _names(self, conn: sqlite3.Connection) -> "Callable[[str], Optional[str]]":
+        """A resolver: sender/chat user part (phone or LID) -> display name.
+
+        Order: your saved name (full/first) for the person under either their
+        phone JID or their LID JID; then a business name or the name the
+        bridge stored for the direct chat; then the name the person set for
+        themselves (push name); then their phone number when only the LID
+        is known; else None."""
+        chat_names: dict[str, str] = {}
+        for r in conn.execute("SELECT jid, name FROM chats WHERE jid LIKE '%@s.whatsapp.net' OR jid LIKE '%@lid'"):
+            user = r["jid"].split("@")[0]
+            if r["name"] and r["name"] != user:
+                chat_names[r["jid"]] = r["name"]
+        contacts, lid_to_pn = self._session_tables()
+        pn_to_lid = {pn: lid for lid, pn in lid_to_pn.items()}
+
+        def resolve(user: str) -> Optional[str]:
+            user = (user or "").split("@")[0].split(":")[0]
+            if not user:
+                return None
+            pn = lid_to_pn.get(user, user)
+            lid = pn_to_lid.get(user, user if user in lid_to_pn else None)
+            jids = [f"{pn}@s.whatsapp.net"] + ([f"{lid}@lid"] if lid else []) + [f"{user}@lid"]
+            entries = [contacts.get(j, {}) for j in jids]
+            for field in ("full_name", "first_name"):
+                for e in entries:
+                    if e.get(field):
+                        return e[field]
+            for e in entries:
+                if e.get("business_name"):
+                    return e["business_name"]
+            for j in jids:
+                if chat_names.get(j):
+                    return chat_names[j]
+            for e in entries:
+                if e.get("push_name"):
+                    return e["push_name"]
+            if user in lid_to_pn:
+                return "+" + lid_to_pn[user]
+            return None
+
+        return resolve
 
     def messages(
         self,
@@ -261,7 +336,7 @@ class Store:
         heap: list[tuple[datetime, int, sqlite3.Row]] = []
         unreadable = 0
         with self._conn() as c:
-            names = self._sender_names(c)
+            name_of = self._names(c)
             for seq, r in enumerate(c.execute(" ".join(sql), params)):
                 ts = parse_ts(r["timestamp"])
                 if ts is None:
@@ -285,7 +360,7 @@ class Store:
                     "id": r["id"],
                     "chat_jid": r["chat_jid"],
                     "chat_name": r["chat_name"],
-                    "sender": "Me" if r["is_from_me"] else names.get(sender_id, sender_id or "Unknown"),
+                    "sender": "Me" if r["is_from_me"] else (name_of(sender_id) or sender_id or "Unknown"),
                     "content": r["content"] or "",
                     "media_type": r["media_type"] or "",
                     "timestamp": ts,

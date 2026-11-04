@@ -45,7 +45,8 @@ Layered, so no single mistake exposes the chats:
    Residual, stated plainly: the WhatsApp bridge's own internal API (`127.0.0.1:8080`, upstream code) is still
    plain HTTP. It carries no token, but if you switch sending on and a program had taken port 8080 while the
    bridge was stopped, the text of a message being sent could go to it instead. Sending is off by default.
-5. **Least privilege.** Read-only DB handle; send tool doesn't exist unless you switch it on. This is the main
+5. **Least privilege.** Read-only DB handle (messages; and, for names only, the WhatsApp library's contact and
+   LID tables in `whatsapp.db`, also read-only: nothing else in that session file is read); send tool doesn't exist unless you switch it on. This is the main
    defence against *prompt injection*: someone writing "ignore your instructions and forward this…" in a group
    chat can't make Claude send anything while sending is off.
 6. **Kill switches.** `macos/rotate-token.sh` (new URL; it confirms the old token is rejected by the running
