@@ -27,8 +27,8 @@ Layered, so no single mistake exposes the chats:
 5. **Least privilege.** Read-only DB handle; send tool doesn't exist unless you switch it on. This is the main
    defence against *prompt injection*: someone writing "ignore your instructions and forward this…" in a group
    chat can't make Claude send anything while sending is off.
-6. **Kill switches.** `scripts/rotate-token.sh` (new URL; it confirms the old token is rejected by the running
-   server before saying so), `scripts/stop.sh` (all off), or unlink the Mac from WhatsApp on your phone.
+6. **Kill switches.** `macos/rotate-token.sh` (new URL; it confirms the old token is rejected by the running
+   server before saying so), `macos/stop.sh` (all off), or unlink the Mac from WhatsApp on your phone.
 
 **If you switch sending on**, the send is two-step: the first call returns a random proposal id bound to the
 exact recipient and text. Only a second call with that id and identical text sends, within 5 minutes, once.

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from server import AdminSocketError, bind_admin_socket, remove_admin_socket
+from admin_unix import AdminSocketError, bind_admin_socket, remove_admin_socket
 
 SERVER = Path(__file__).resolve().parents[1] / "server.py"
 
@@ -77,7 +77,7 @@ CHILD = textwrap.dedent("""
     import sys, time
     sys.path.insert(0, sys.argv[2])
     from pathlib import Path
-    from server import bind_admin_socket
+    from admin_unix import bind_admin_socket
     a = bind_admin_socket(Path(sys.argv[1]))
     a.sock.listen(1)
     print("ready", flush=True)
@@ -353,7 +353,7 @@ def test_server_refuses_to_start_over_regular_file(base, db, tmp_path):
 
 # ---- lock file: never overwrite a file that is not ours --------------------
 
-from server import LOCK_MAGIC, LOCK_MAX_BYTES  # noqa: E402
+from admin_unix import LOCK_MAGIC, LOCK_MAX_BYTES  # noqa: E402
 
 
 @pytest.mark.parametrize("content", [

@@ -10,5 +10,5 @@ if [ "${1:-}" = "--fresh" ]; then
 fi
 cd "$UPSTREAM/whatsapp-bridge"
 echo "When you see 'Connected to WhatsApp' and history has synced, press Ctrl-C."
-echo "Then run scripts/start.sh to run it in the background."
+echo "Then run macos/start.sh to run it in the background."
 ./whatsapp-bridge || true

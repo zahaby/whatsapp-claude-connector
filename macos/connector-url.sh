@@ -3,7 +3,7 @@
 # on a shared screen). --print writes it to the terminal instead.
 source "$(dirname "$0")/common.sh"
 host="$(env_get MCP_PUBLIC_HOSTNAME)"
-[ -n "$host" ] || die "MCP_PUBLIC_HOSTNAME not set; run scripts/setup-tunnel.sh"
+[ -n "$host" ] || die "MCP_PUBLIC_HOSTNAME not set; run macos/setup-tunnel.sh"
 url="https://$host/mcp/$(env_get MCP_AUTH_TOKEN)"
 if [ "${1:-}" = "--print" ]; then
   echo "$url"

@@ -40,7 +40,7 @@ svc_stop() {
   launchctl bootout "$DOMAIN/$1" || die "launchctl could not stop $1"
 }
 svc_start() {
-  [ -f "$LA/$1.plist" ] || die "$LA/$1.plist missing; run scripts/install.sh"
+  [ -f "$LA/$1.plist" ] || die "$LA/$1.plist missing; run macos/install.sh"
   if svc_loaded "$1"; then svc_restart "$1"; else
     launchctl bootstrap "$DOMAIN" "$LA/$1.plist" || die "launchctl could not start $1"
   fi

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time Cloudflare Tunnel setup. Needs a domain on your Cloudflare account.
-#   scripts/setup-tunnel.sh wa.yourdomain.com
+#   macos/setup-tunnel.sh wa.yourdomain.com
 # Outbound-only: no router ports are opened, the Mac's IP is never exposed.
 source "$(dirname "$0")/common.sh"
 HOSTNAME="${1:?usage: $0 <hostname e.g. wa.example.com>}"

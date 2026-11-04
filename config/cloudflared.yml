@@ -1,4 +1,4 @@
-# Template: scripts/setup-tunnel.sh renders it to ~/.cloudflared/wa-connector.yml
+# Template: macos/setup-tunnel.sh renders it to ~/.cloudflared/wa-connector.yml
 tunnel: __TUNNEL_ID__
 credentials-file: __HOME__/.cloudflared/__TUNNEL_ID__.json
 ingress:

@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "scripts"
+SCRIPTS = ROOT / "macos"
 STUBS = Path(__file__).resolve().parent / "stubs"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -127,7 +127,7 @@ ANTHROPIC_LIKE = "160.79.104.0/21"   # any CIDR that excludes 127.0.0.1
 
 @pytest.fixture(params=["no-allowlist", "allowlist"])
 def running(env, request):
-    """Connector loaded and serving, like after scripts/start.sh. Every test
+    """Connector loaded and serving, like after macos/start.sh. Every test
     using it runs twice: without and with MCP_ALLOWED_IPS (finding: verify
     must still work when the allowlist excludes localhost)."""
     env.allowlist = request.param == "allowlist"
@@ -148,7 +148,7 @@ PLIST_PLACEHOLDERS = ("__HOME__", "__REPO__", "__UPSTREAM__", "__CLOUDFLARED__")
 
 def test_placeholder_list_matches_templates():
     found = set()
-    for t in (ROOT / "launchd").glob("*.plist"):
+    for t in (ROOT / "macos" / "launchd").glob("*.plist"):
         found |= set(re.findall(r"__[A-Z]+__", t.read_text()))
     assert found == set(PLIST_PLACEHOLDERS)
 
@@ -276,7 +276,7 @@ def test_sending_off_failure_is_loud(running, mode):
 def test_sending_when_not_running(env):
     env.write_env()
     r = env.run("sending.sh", "on")
-    assert r.returncode == 0 and "applies on scripts/start.sh" in r.stdout
+    assert r.returncode == 0 and "applies on macos/start.sh" in r.stdout
     assert env.get("WHATSAPP_ALLOW_SEND") == "true"
 
 

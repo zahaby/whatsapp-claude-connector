@@ -46,15 +46,15 @@ mkdir -p "$LA" "$LOGS"
 for label in "${LABELS[@]}"; do
   sed -e "s|__HOME__|$HOME|g" -e "s|__REPO__|$REPO|g" -e "s|__UPSTREAM__|$UPSTREAM|g" \
     -e "s|__CLOUDFLARED__|$(command -v cloudflared)|g" \
-    "$REPO/launchd/$label.plist" > "$LA/$label.plist"
+    "$REPO/macos/launchd/$label.plist" > "$LA/$label.plist"
 done
 
 cat <<MSG
 
 Install done. Next steps (see README):
-  1. Link WhatsApp (you scan the QR):    scripts/link-whatsapp.sh
+  1. Link WhatsApp (you scan the QR):    macos/link-whatsapp.sh
   2. Claude Desktop config entry:
      "whatsapp-family": {"command": "$PY",
                          "args": ["$REPO/connector/server.py", "--transport", "stdio"]}
-  3. Tunnel (once): scripts/setup-tunnel.sh <hostname>, then scripts/start.sh
+  3. Tunnel (once): macos/setup-tunnel.sh <hostname>, then macos/start.sh
 MSG

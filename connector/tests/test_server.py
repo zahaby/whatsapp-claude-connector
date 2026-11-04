@@ -256,7 +256,7 @@ def test_http_mode_refuses_weak_token(monkeypatch, db):
         server.main(["--transport", "http"])
 
 
-def test_router_sends_only_exact_admin_socket_to_local_gate():
+def test_router_sends_only_matching_requests_to_local_gate():
     from server import ListenerRouter
     seen = []
 
@@ -265,8 +265,21 @@ def test_router_sends_only_exact_admin_socket_to_local_gate():
             seen.append(name)
         return app
 
-    r = ListenerRouter(mk("public"), mk("local"), Path("/run/wa/admin.sock"))
-    for server in [("/run/wa/admin.sock", None), ("127.0.0.1", 8765), ("/run/wa/admin.sock", 80),
-                   ("/other.sock", None), None]:
+    r = ListenerRouter(mk("public"), mk("local"), local_match=lambda scope: scope.get("server") == "admin")
+    for server in ["admin", ("127.0.0.1", 8765), None]:
         asyncio.run(r({"type": "http", "server": server}, None, None))
-    assert seen == ["local", "public", "public", "public", "public"]
+    assert seen == ["local", "public", "public"]
+    seen.clear()
+    asyncio.run(ListenerRouter(mk("public"), mk("local"))({"type": "http", "server": "admin"}, None, None))
+    assert seen == ["public"]  # no admin channel: everything is public
+
+
+def test_unix_listener_matches_only_exact_socket_path():
+    from admin_unix import UnixAdminListener
+    listener = UnixAdminListener.__new__(UnixAdminListener)  # matching logic only, no bind
+    listener.path = Path("/run/wa/admin.sock")
+    cases = {("/run/wa/admin.sock", None): True, ("127.0.0.1", 8765): False,
+             ("/run/wa/admin.sock", 80): False, ("/other.sock", None): False}
+    for server, expected in cases.items():
+        assert listener.matches({"server": server}) is expected
+    assert listener.matches({}) is False

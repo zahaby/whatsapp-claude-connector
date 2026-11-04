@@ -1,6 +1,6 @@
 """
 Check what the RUNNING connector actually enforces, over its local HTTP port.
-Used by scripts/rotate-token.sh and scripts/sending.sh so they only report
+Used by macos/rotate-token.sh and macos/sending.sh so they only report
 success after observing the new behaviour, not just after editing .env.
 
   verify.py wait-healthy                       wait until /healthz answers
@@ -9,8 +9,8 @@ success after observing the new behaviour, not just after editing .env.
   verify.py sending --expect on|off            send tool present / absent
 
 Exit status 0 = verified, 1 = not verified (reason on stderr).
-Token and tool checks go over the connector's local Unix socket
-(MCP_ADMIN_SOCKET), so they work even when MCP_ALLOWED_IPS only admits
+Token and tool checks go over the connector's local admin channel
+(admin_channel.py; on macOS/Linux the Unix socket MCP_ADMIN_SOCKET), so they work even when MCP_ALLOWED_IPS only admits
 Anthropic's addresses on the TCP port. wait-healthy uses the TCP port, so
 it also proves the listener cloudflared forwards to is up.
 Each check sends at most ONE request with a wrong token, so it never trips
@@ -20,8 +20,6 @@ the connector's failed-attempt lockout. Nothing here prints a token.
 from __future__ import annotations
 
 import argparse
-import http.client
-import socket
 import json
 import os
 import sys
@@ -31,6 +29,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import admin_channel  # noqa: E402
 from server import Config  # noqa: E402  (loads .env the same way the server does)
 
 
@@ -46,23 +45,10 @@ def _status(req: urllib.request.Request, timeout: float = 5) -> tuple[int, bytes
         return e.code, e.read()
 
 
-class UnixHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, path: str, timeout: float = 5):
-        super().__init__("localhost", timeout=timeout)  # Host: localhost passes the Host check
-        self.path = path
-
-    def connect(self):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect(self.path)
-
-
 def tools_list(cfg: Config, token: str) -> tuple[int, list[str]]:
-    """POST tools/list over the local admin socket."""
-    if not cfg.admin_socket:
-        raise OSError("MCP_ADMIN_SOCKET not configured")
+    """POST tools/list over the local admin channel."""
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-    conn = UnixHTTPConnection(str(cfg.admin_socket))
+    conn = admin_channel.connect(cfg)
     try:
         conn.request("POST", "/mcp", body=body, headers={
             "Authorization": f"Bearer {token}", "Content-Type": "application/json",

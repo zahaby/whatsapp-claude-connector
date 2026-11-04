@@ -27,24 +27,31 @@ Claude Desktop ──stdio──┐                                             
 | DB opened read-write | DB opened `mode=ro` |
 | Bridge prints **every message's text** to the terminal/log | `install.sh` patches it to a content-free line, so nothing shows on the screen-share or in logs |
 
-Upstream is pinned to an audited commit (`scripts/common.sh`) and left unmodified apart from two small, verified patches (bind address, no message text in output). The patched bridge was compile-checked.
+Upstream is pinned to an audited commit (`macos/common.sh`) and left unmodified apart from two small, verified patches (bind address, no message text in output). The patched bridge was compile-checked.
 
 ## Files
 
+One repo, shared core, one folder per operating system:
+
 ```
-connector/server.py          MCP server (tools, send switch, TokenGate auth)
-connector/.env.example       all settings; real .env is chmod 600 and git-ignored
-connector/verify.py          checks what the RUNNING connector enforces, over a local owner-only socket
-connector/tests/             pytest: server, HTTP integration, and the shell scripts (stubbed launchctl)
-scripts/install.sh           clone+pin upstream, patch, build, venv, token, launchd
-scripts/link-whatsapp.sh     run bridge in foreground so the OWNER scans the QR
-scripts/setup-tunnel.sh      one-time Cloudflare named tunnel + DNS
-scripts/start.sh|stop.sh|status.sh
-scripts/sending.sh on|off    THE SEND SWITCH (verifies the running connector)
-scripts/rotate-token.sh      new secret; verifies old token rejected before claiming success
-scripts/connector-url.sh     copies the secret connector URL to the clipboard (--print to show)
-launchd/*.plist              bridge, connector, tunnel as login services (auto-restart)
-config/cloudflared.yml       tunnel ingress: only /mcp* and /healthz forwarded
+connector/                   SHARED CORE (Python, any OS)
+  server.py                  MCP server: tools, send switch, TokenGate auth, two-step send
+  verify.py                  checks what the RUNNING connector enforces, via the admin channel
+  admin_channel.py           picks the OS-specific local admin channel
+  admin_unix.py              macOS/Linux: owner-only Unix socket + lock file
+  .env.example               all settings; real .env is owner-only and git-ignored
+  tests/                     pytest: core, HTTP integration, admin channel, macOS scripts
+config/cloudflared.yml       tunnel ingress (shared): only /mcp* and /healthz forwarded
+macos/                       macOS PLATFORM LAYER
+  install.sh                 clone+pin upstream, patch, build, venv, token, launchd
+  link-whatsapp.sh           run bridge in foreground so the OWNER scans the QR
+  setup-tunnel.sh            one-time Cloudflare named tunnel + DNS
+  start.sh|stop.sh|status.sh
+  sending.sh on|off          THE SEND SWITCH (verifies the running connector)
+  rotate-token.sh            new secret; verifies old token rejected before claiming success
+  connector-url.sh           copies the secret connector URL to the clipboard (--print to show)
+  launchd/*.plist            bridge, connector, tunnel as login services (auto-restart)
+  claude_desktop_config.example.json
 docs/HANDOVER.md             one-page restart / re-link note
 docs/SECURITY.md             answers: securing the endpoint; no access to messages
 ```
@@ -58,30 +65,30 @@ brew install go uv cloudflared
 ```
 
 ```bash
-git clone <this repo> ~/wa-connector && cd ~/wa-connector && scripts/install.sh
+git clone <this repo> ~/wa-connector && cd ~/wa-connector && macos/install.sh
 ```
 
-**1. Link WhatsApp (owner only).** `scripts/link-whatsapp.sh`. Owner scans the QR on their phone (WhatsApp → Settings → Linked devices). The helper looks away from the screen / pauses screen-share while history syncs. Ctrl-C once you see "Connected".
+**1. Link WhatsApp (owner only).** `macos/link-whatsapp.sh`. Owner scans the QR on their phone (WhatsApp → Settings → Linked devices). The helper looks away from the screen / pauses screen-share while history syncs. Ctrl-C once you see "Connected".
 
 **2. Local (acceptance criterion 1).** Paste the snippet `install.sh` printed into
-`~/Library/Application Support/Claude/claude_desktop_config.json` (template in `config/`), restart Claude Desktop,
+`~/Library/Application Support/Claude/claude_desktop_config.json` (template in `macos/`), restart Claude Desktop,
 then ask: *"Summarise the Family WhatsApp chat from the last week."*
 
 **3. Remote (criterion 2).**
 ```bash
-scripts/setup-tunnel.sh wa.yourdomain.com
+macos/setup-tunnel.sh wa.yourdomain.com
 ```
 ```bash
-scripts/start.sh
+macos/start.sh
 ```
 ```bash
-scripts/connector-url.sh
+macos/connector-url.sh
 ```
 Owner (not the helper) pastes the URL into **claude.ai → Settings → Connectors → Add custom connector**, name it "WhatsApp".
 It syncs to the iPhone app. Test from iPhone voice mode: *"Summarise my Family WhatsApp chat."*
 Once the remote connector works you can remove the local Desktop entry so tools aren't listed twice. Desktop sees the remote connector too.
 
-**4. Sending (criterion 3).** Off by default. `scripts/sending.sh on` / `off` / `status`. Details in docs/HANDOVER.md.
+**4. Sending (criterion 3).** Off by default. `macos/sending.sh on` / `off` / `status`. Details in docs/HANDOVER.md.
 
 ## Tests
 
@@ -114,11 +121,11 @@ cd connector && uv run --group dev pytest -q
 **Not covered by the tests: real launchd on a Mac.** On the Mac, check by hand once (5 minutes):
 
 ```bash
-scripts/start.sh && scripts/rotate-token.sh && scripts/sending.sh on && scripts/sending.sh off && scripts/status.sh
+macos/start.sh && macos/rotate-token.sh && macos/sending.sh on && macos/sending.sh off && macos/status.sh
 ```
 
 Each step must print `Verified`. Then try the failure path: `launchctl bootout gui/$(id -u)/com.wa.connector`,
-run `scripts/sending.sh status` (should say "not running"), then `scripts/start.sh`.
+run `macos/sending.sh status` (should say "not running"), then `macos/start.sh`.
 
 ## Known limits / things to verify on the day
 
