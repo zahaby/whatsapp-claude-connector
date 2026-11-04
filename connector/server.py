@@ -90,6 +90,13 @@ class Config:
     admin_port: int = 0
     # Loopback TLS (tls.py): certificate + key the clients pin.
     tls_dir: Optional[Path] = None
+    # Daily group summary (daily.py): off unless WHATSAPP_AUTOPOST=true.
+    autopost: bool = False
+    autopost_chat: str = ""
+    daily_token: str = ""
+    autopost_min_interval_h: float = 20.0
+    autopost_max_chars: int = 3000
+    state_dir: Optional[Path] = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -108,6 +115,12 @@ class Config:
             admin_channel=(os.environ.get("MCP_ADMIN_CHANNEL") or ("tcp" if IS_WINDOWS else "unix")).strip().lower(),
             admin_port=int(os.environ.get("MCP_ADMIN_PORT") or int(os.environ.get("MCP_PORT", "8765")) + 1),
             tls_dir=Path(os.path.expanduser(os.environ["MCP_TLS_DIR"])) if os.environ.get("MCP_TLS_DIR") else None,
+            autopost=env_bool("WHATSAPP_AUTOPOST", False),
+            autopost_chat=os.environ.get("WA_AUTOPOST_CHAT", "").strip(),
+            daily_token=os.environ.get("MCP_DAILY_TOKEN", "").strip(),
+            autopost_min_interval_h=float(os.environ.get("WA_AUTOPOST_MIN_INTERVAL_H") or 20),
+            autopost_max_chars=int(os.environ.get("WA_AUTOPOST_MAX_CHARS") or 3000),
+            state_dir=Path(os.path.expanduser(os.environ["WA_STATE_DIR"])) if os.environ.get("WA_STATE_DIR") else None,
         )
 
 
@@ -561,6 +574,15 @@ def build_server(cfg: Config, store: Optional[Store] = None):
             f"on the computer running it with: {OPS}sending{OPS_EXT} on"
         )
 
+    if cfg.autopost:
+        @mcp.tool()
+        def autopost_status() -> str:
+            """Whether the separate daily-summary connector is switched on, and
+            which group it posts to. Read-only."""
+            name = next((c["name"] for c in store.chats() if c["jid"] == cfg.autopost_chat), cfg.autopost_chat)
+            return (f"Daily summary is ON for '{name}'. It has its own connector (/daily); "
+                    f"switch it off with {OPS}daily-summary{OPS_EXT} off")
+
     if cfg.allow_send:
         import requests
 
@@ -627,10 +649,12 @@ class TokenGate:
     MAX_FAILS = 10
     WINDOW_S = 600
 
-    def __init__(self, app, token: str, mcp_path: str = "/mcp", allowed_ips: Optional[list[str]] = None):
+    def __init__(self, app, token: str, mcp_path: str = "/mcp", allowed_ips: Optional[list[str]] = None,
+                 rewrite_to: Optional[str] = None):
         self.app = app
         self.token = token.encode()
         self.mcp_path = mcp_path
+        self.rewrite_to = rewrite_to or mcp_path  # path the inner app serves
         self.networks = [ipaddress.ip_network(c, strict=False) for c in (allowed_ips or [])]
         self.fails: dict[str, deque] = defaultdict(deque)
 
@@ -735,7 +759,7 @@ class TokenGate:
             return await self._reply(send, 404, b"", receive)
 
         # Rewrite /mcp/<token> -> /mcp so the token never reaches the MCP app.
-        scope = dict(scope, path=self.mcp_path, raw_path=self.mcp_path.encode())
+        scope = dict(scope, path=self.rewrite_to, raw_path=self.rewrite_to.encode())
         return await self.app(scope, receive, send)
 
 
@@ -826,6 +850,10 @@ def main(argv: Optional[list[str]] = None) -> None:
               f"Run {OPS}rotate-token{OPS_EXT}")
     if cfg.host not in {"127.0.0.1", "localhost", "::1"}:
         fatal("Refusing to bind a non-loopback address; publish via cloudflared instead.")
+    import daily
+    problem = daily.config_problem(cfg)
+    if problem:
+        fatal(f"Refusing to start: {problem}")
 
     import uvicorn
 
@@ -859,8 +887,18 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     inner = mcp.streamable_http_app()
     path = mcp.settings.streamable_http_path
+    public = TokenGate(inner, cfg.auth_token, mcp_path=path, allowed_ips=cfg.allowed_ips)
+    if cfg.autopost:
+        # Separate, minimal endpoint for the unattended daily summary (daily.py).
+        import daily
+        daily_mcp = daily.build_daily_server(cfg, Store(cfg.db_path),
+                                             daily.DailyState(cfg.state_dir or daily.default_state_dir()))
+        daily_gate = TokenGate(daily_mcp.streamable_http_app(), cfg.daily_token, mcp_path=daily.DAILY_PATH,
+                               allowed_ips=cfg.allowed_ips, rewrite_to=daily_mcp.settings.streamable_http_path)
+        public = daily.PathRouter(public, daily_gate, daily_mcp)
+        log.info("daily summary endpoint ON for chat=%s", cfg.autopost_chat)
     app = ListenerRouter(
-        public=TokenGate(inner, cfg.auth_token, mcp_path=path, allowed_ips=cfg.allowed_ips),
+        public=public,
         # Admin channel: mutual challenge-response first (admin_auth.py), so
         # the scripts never send the token to whoever holds the channel.
         local=AdminAuth(TokenGate(inner, cfg.auth_token, mcp_path=path, allowed_ips=None), cfg.auth_token),

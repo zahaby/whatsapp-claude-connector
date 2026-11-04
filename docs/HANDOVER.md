@@ -41,6 +41,11 @@ When on, sending takes two steps: Claude proposes the exact text, you say yes, t
 Settings → Connectors → WhatsApp, keep *send_message* on **"Ask every time"**: that approval prompt is your real
 safeguard.
 
+## Daily group summary (if you set it up)
+A scheduled Claude task posts one summary a night into one group, through its own minimal connector.
+`~/wa-connector/macos/daily-summary.sh status` shows the group and the last post. Stop it: `~/wa-connector/macos/daily-summary.sh off` (prints **Verified**).
+Its URL leaked? `~/wa-connector/macos/daily-summary.sh rotate`, then paste the new one (`~/wa-connector/macos/daily-summary.sh url`) into the *WhatsApp Daily* connector in claude.ai.
+
 ## Token / connector URL
 The connector URL contains a secret. Treat it like a password and never paste it in a chat.
 Lost phone or suspect a leak? Run `macos/rotate-token.sh`. It only prints **Verified** after checking that the running connector rejects the old token. Then run `macos/connector-url.sh` (copies the new URL to the clipboard) and paste it into claude.ai → Settings → Connectors → "WhatsApp".

@@ -230,6 +230,7 @@ def _check_rendered(cfg_text: str, port: int, cert: Path):
     assert f"caPool: '{cert}'" in cfg_text
     assert f"originServerName: {tls.SERVER_NAME}" in cfg_text
     assert "noTLSVerify: false" in cfg_text
+    assert "path: ^/(mcp(/.*)?|daily(/.*)?|healthz)$" in cfg_text   # daily-summary endpoint forwarded
     for placeholder in ("__TUNNEL_ID__", "__HOME__", "__HOSTNAME__", "__PORT__", "__CA_POOL__"):
         assert placeholder not in cfg_text
     assert "tunnel: 8f3569a9-6bc5-4355-924d-ba2d2cae182b" in cfg_text

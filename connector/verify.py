@@ -132,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("token")  # tokens come from .env / env vars, never argv (visible in ps)
     s = sub.add_parser("sending")
     s.add_argument("--expect", choices=["on", "off"], required=True)
+    ap_ = sub.add_parser("autopost")  # daily group summary endpoint on/off
+    ap_.add_argument("--expect", choices=["on", "off"], required=True)
     args = ap.parse_args(argv)
     cfg = Config.from_env()
 
@@ -163,6 +165,18 @@ def main(argv: list[str] | None = None) -> int:
                 raise
             if status != 200:
                 print(f"new token NOT accepted (HTTP {status})", file=sys.stderr)
+                return 1
+            return 0
+
+        if args.cmd == "autopost":
+            status, names = tools_list(cfg, cfg.auth_token)
+            if status != 200:
+                print(f"could not list tools (HTTP {status})", file=sys.stderr)
+                return 1
+            present = "autopost_status" in names
+            if present != (args.expect == "on"):
+                print(f"running connector has the daily summary {'ON' if present else 'OFF'}, "
+                      f"expected {args.expect.upper()}", file=sys.stderr)
                 return 1
             return 0
 

@@ -26,6 +26,11 @@ Cut the PC off completely: phone → Linked devices → tap the PC → **Log out
 It only prints **Verified** once the running connector is confirmed. **ERROR** means assume the old setting is live; run `windows\stop.ps1`.
 After switching: new chat in the Claude app; quit and reopen Claude Desktop. Keep *send_message* on **"Ask every time"** in claude.ai → Settings → Connectors → WhatsApp.
 
+## Daily group summary (if you set it up)
+A scheduled Claude task posts one summary a night into one group, through its own minimal connector.
+`windows\daily-summary.ps1 status` shows the group and the last post. Stop it: `windows\daily-summary.ps1 off` (prints **Verified**).
+Its URL leaked? `windows\daily-summary.ps1 rotate`, then paste the new one (`windows\daily-summary.ps1 url`) into the *WhatsApp Daily* connector in claude.ai.
+
 ## Token / connector URL
 The URL contains a secret: treat it like a password. Leak or lost phone: `windows\rotate-token.ps1` (prints **Verified** only after the
 running connector rejects the old token), then `windows\connector-url.ps1` (copies the new URL) and paste it into claude.ai → Settings → Connectors.

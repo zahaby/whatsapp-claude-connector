@@ -353,3 +353,54 @@ def test_stub_kills_process_ignoring_sigterm(env):
     assert r.returncode == 0 and time.monotonic() - start < 12
     assert "SIGKILL" in r.stderr
     assert child.wait(timeout=5) == -9
+
+
+# ---- daily group summary switch ------------------------------------------------
+
+def test_daily_summary_set_on_off_verified(running):
+    r = running.run("daily-summary.sh", "set", "Family")
+    assert r.returncode == 0 and "Daily summary group: Family" in r.stdout, r.stderr
+    assert running.get("WA_AUTOPOST_CHAT") == "1203630@g.us"
+    r = running.run("daily-summary.sh", "on")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Verified: the running connector has the daily summary ON" in r.stdout
+    token = running.get("MCP_DAILY_TOKEN")
+    assert len(token) == 43 and token != running.get("MCP_AUTH_TOKEN")
+    running.token_ok(running.get("MCP_AUTH_TOKEN"))
+    assert "autopost_status" in running.last_tools
+    r = running.run("daily-summary.sh", "off")
+    assert r.returncode == 0 and "daily summary OFF" in r.stdout, r.stdout + r.stderr
+    running.token_ok(running.get("MCP_AUTH_TOKEN"))
+    assert "autopost_status" not in running.last_tools
+
+
+def test_daily_summary_rotate_changes_token(running):
+    assert running.run("daily-summary.sh", "set", "Family").returncode == 0
+    assert running.run("daily-summary.sh", "on").returncode == 0
+    old = running.get("MCP_DAILY_TOKEN")
+    r = running.run("daily-summary.sh", "rotate")
+    assert r.returncode == 0 and "Verified" in r.stdout, r.stderr
+    assert running.get("MCP_DAILY_TOKEN") not in (old, "")
+
+
+def test_daily_summary_off_failure_is_loud(running):
+    assert running.run("daily-summary.sh", "set", "Family").returncode == 0
+    assert running.run("daily-summary.sh", "on").returncode == 0
+    r = running.run("daily-summary.sh", "off", STUB_KICKSTART="fail")
+    assert r.returncode != 0 and "It may STILL BE ON" in r.stderr
+
+
+def test_daily_summary_refuses_without_group_or_unknown_group(env):
+    env.write_env()
+    r = env.run("daily-summary.sh", "on")
+    assert r.returncode != 0 and "choose the group first" in r.stderr
+    assert env.get("WHATSAPP_AUTOPOST") in ("", "false")
+    r = env.run("daily-summary.sh", "set", "fam")
+    assert r.returncode != 0 and "Family Cairo" in r.stderr   # ambiguous: names the candidates
+    assert env.get("WA_AUTOPOST_CHAT") == ""
+
+
+def test_daily_summary_url(env):
+    env.write_env(MCP_PUBLIC_HOSTNAME="wa.example.com", MCP_DAILY_TOKEN="Q" * 43)
+    r = env.run("daily-summary.sh", "url", "--print")
+    assert r.returncode == 0 and r.stdout.strip() == "https://wa.example.com/daily/" + "Q" * 43

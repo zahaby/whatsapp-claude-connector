@@ -66,3 +66,4 @@ def _isolated_tls_dir(tmp_path, monkeypatch):
     directory unless it sets MCP_TLS_DIR itself, so nothing is ever
     created in the repo's default connector/.tls."""
     monkeypatch.setenv("MCP_TLS_DIR", str(tmp_path / "default-tls"))
+    monkeypatch.setenv("WA_STATE_DIR", str(tmp_path / "default-state"))

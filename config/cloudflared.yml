@@ -2,9 +2,9 @@
 tunnel: __TUNNEL_ID__
 credentials-file: __HOME__/.cloudflared/__TUNNEL_ID__.json
 ingress:
-  # Only the MCP path and the health check are forwarded; everything else 404s at the edge.
+  # Only the MCP paths (/mcp, /daily) and the health check are forwarded; everything else 404s at the edge.
   - hostname: __HOSTNAME__
-    path: ^/(mcp(/.*)?|healthz)$
+    path: ^/(mcp(/.*)?|daily(/.*)?|healthz)$
     # TLS to the connector, trusting ONLY its own certificate (connector/tls.py).
     # A process that grabs this port while the connector is stopped cannot
     # complete the handshake, so the token in the request URL is never sent to it.

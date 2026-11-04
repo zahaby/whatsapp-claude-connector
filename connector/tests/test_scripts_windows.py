@@ -343,3 +343,31 @@ def test_connector_url_print(env):
     env.write_env(MCP_PUBLIC_HOSTNAME="wa.example.com")
     r = env.run("connector-url.ps1", "-Print")
     assert r.returncode == 0 and r.stdout.strip() == f"https://wa.example.com/mcp/{'A' * 43}"
+
+
+# ---- daily group summary switch ------------------------------------------------
+
+def test_daily_summary_set_on_off_verified(running):
+    r = running.run("daily-summary.ps1", "set", "Family")
+    assert r.returncode == 0 and "Daily summary group: Family" in r.stdout, r.stdout + r.stderr
+    assert running.get("WA_AUTOPOST_CHAT") == "1203630@g.us"
+    r = running.run("daily-summary.ps1", "on")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Verified: the running connector has the daily summary ON" in r.stdout
+    assert len(running.get("MCP_DAILY_TOKEN")) == 43
+    running.status(running.get("MCP_AUTH_TOKEN"))
+    assert "autopost_status" in running.last_tools
+    r = running.run("daily-summary.ps1", "off")
+    assert r.returncode == 0 and "daily summary OFF" in r.stdout, r.stdout + r.stderr
+
+
+def test_daily_summary_refuses_without_group(env):
+    env.write_env()
+    r = env.run("daily-summary.ps1", "on")
+    assert r.returncode != 0 and "choose the group first" in r.stderr
+
+
+def test_daily_summary_url(env):
+    env.write_env(MCP_PUBLIC_HOSTNAME="wa.example.com", MCP_DAILY_TOKEN="Q" * 43)
+    r = env.run("daily-summary.ps1", "url", "-Print")
+    assert r.returncode == 0 and r.stdout.strip() == "https://wa.example.com/daily/" + "Q" * 43
