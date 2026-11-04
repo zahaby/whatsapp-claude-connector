@@ -149,3 +149,19 @@ def test_token_never_logged(server):
     proc.terminate()
     _, err = proc.communicate(timeout=5)
     assert TOKEN not in err and "guess-" not in err
+
+
+@pytest.mark.parametrize("size", [2, 64 * 1024, 900 * 1024])
+def test_rejected_post_gets_complete_response(server, size):
+    # Regression (Windows CI): rejecting a POST without reading its body made
+    # the socket close with unread data, and the TCP reset cut the 404 short.
+    base, _ = server
+    port = int(base.rsplit(":", 1)[1])
+    for _ in range(3):  # several in a row: none may be cut off
+        c = net.connection(port, TLS_DIR["current"])
+        c.request("POST", "/mcp", body=b"x" * size, headers={"Authorization": "Bearer wrong",
+                                                            "Content-Type": "application/json"})
+        r = c.getresponse()
+        assert r.status == 404 and r.getheader("Content-Length") == "0"
+        assert r.read() == b""
+        c.close()

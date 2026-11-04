@@ -587,9 +587,24 @@ class TokenGate:
             return False
         return any(addr in n for n in self.networks)
 
-    async def _reply(self, send, status: int, body: bytes = b"") -> None:
+    DRAIN_LIMIT = 1 << 20
+
+    async def _reply(self, send, status: int, body: bytes = b"", receive=None) -> None:
+        # Read (and discard) the request body first, up to a limit. Closing a
+        # socket with unread data makes Windows send a TCP reset, which cuts
+        # off this response mid-way on the client side.
+        if receive is not None:
+            drained = 0
+            while drained <= self.DRAIN_LIMIT:
+                msg = await receive()
+                if msg["type"] != "http.request":
+                    break
+                drained += len(msg.get("body", b""))
+                if not msg.get("more_body"):
+                    break
         await send({"type": "http.response.start", "status": status,
-                    "headers": [(b"content-type", b"text/plain"), (b"cache-control", b"no-store")]})
+                    "headers": [(b"content-type", b"text/plain"), (b"cache-control", b"no-store"),
+                                (b"content-length", str(len(body)).encode())]})
         await send({"type": "http.response.body", "body": body})
 
     async def __call__(self, scope, receive, send):
@@ -602,12 +617,12 @@ class TokenGate:
         path = scope.get("path", "")
 
         if path == "/healthz":
-            return await self._reply(send, 200, b"ok")
+            return await self._reply(send, 200, b"ok", receive)
         if self._blocked(ip):
-            return await self._reply(send, 429, b"")
+            return await self._reply(send, 429, b"", receive)
         if not self._ip_allowed(ip):
             log.warning("rejected ip=%s (not in MCP_ALLOWED_IPS)", ip)
-            return await self._reply(send, 404, b"")
+            return await self._reply(send, 404, b"", receive)
 
         authorised = False
         prefix = self.mcp_path + "/"
@@ -622,7 +637,7 @@ class TokenGate:
         if not authorised:
             self.fails[ip].append(time.monotonic())
             log.warning("auth failure ip=%s", ip)  # never log the path: it may hold a token guess
-            return await self._reply(send, 404, b"")
+            return await self._reply(send, 404, b"", receive)
 
         # Rewrite /mcp/<token> -> /mcp so the token never reaches the MCP app.
         scope = dict(scope, path=self.mcp_path, raw_path=self.mcp_path.encode())
