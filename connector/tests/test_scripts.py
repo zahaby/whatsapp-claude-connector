@@ -404,3 +404,40 @@ def test_daily_summary_url(env):
     env.write_env(MCP_PUBLIC_HOSTNAME="wa.example.com", MCP_DAILY_TOKEN="Q" * 43)
     r = env.run("daily-summary.sh", "url", "--print")
     assert r.returncode == 0 and r.stdout.strip() == "https://wa.example.com/daily/" + "Q" * 43
+
+
+# ---- video / voice-note transcription switch -----------------------------------
+
+def with_fake_whisper(env):
+    return {"PYTHONPATH": os.pathsep.join([str(Path(__file__).resolve().parent / "fakes"), env.vars.get("PYTHONPATH", "")])}
+
+
+def test_media_setup_on_off_verified(running):
+    fake = with_fake_whisper(running)
+    running.vars.update(fake)                       # the restarted connector sees it too
+    r = running.run("media-setup.sh", "on")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Verified: the running connector has transcription ON" in r.stdout
+    assert running.get("WA_MEDIA") == "true" and running.get("WA_WHISPER_MODEL") == "medium"
+    assert "uv sync -q --extra media" in (running.state / "calls").read_text()
+    running.token_ok(running.get("MCP_AUTH_TOKEN"))
+    assert "media_status" in running.last_tools and "get_links_and_media" in running.last_tools
+    r = running.run("media-setup.sh", "off")
+    assert r.returncode == 0 and "transcription OFF" in r.stdout, r.stdout + r.stderr
+    running.token_ok(running.get("MCP_AUTH_TOKEN"))
+    assert "media_status" not in running.last_tools and "get_links_and_media" in running.last_tools
+
+
+def test_media_setup_fails_cleanly_without_the_model_package(env):
+    env.write_env()
+    r = env.run("media-setup.sh", "on")                # no faster_whisper available
+    assert r.returncode != 0 and "could not download the speech model" in r.stderr
+    assert env.get("WA_MEDIA") in ("", "false")
+
+
+def test_reinstall_keeps_the_media_packages(env):
+    fake_upstream(env, (FIXTURES / "upstream_main.go.txt").read_text())
+    env.write_env(WA_MEDIA="true")
+    r = env.run("install.sh")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "uv sync -q --extra media" in (env.state / "calls").read_text()

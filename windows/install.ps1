@@ -36,7 +36,10 @@ try {
 Write-Output '==> Connector virtualenv'
 Push-Location (Join-Path $Repo 'connector')
 try {
-    if ((Invoke-Native 'uv' @('sync', '-q')) -ne 0) { Fail 'uv sync failed' }
+    # Keep the optional transcription packages if media-setup turned them on.
+    $syncArgs = @('sync', '-q')
+    if ((Get-EnvValue 'WA_MEDIA') -eq 'true') { $syncArgs += @('--extra', 'media') }
+    if ((Invoke-Native 'uv' $syncArgs) -ne 0) { Fail 'uv sync failed' }
 } finally { Pop-Location }
 
 if (-not (Test-Path -LiteralPath $EnvFile)) {

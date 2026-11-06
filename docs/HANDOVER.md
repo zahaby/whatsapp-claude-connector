@@ -46,6 +46,10 @@ A scheduled Claude task posts one summary a night into one group, through its ow
 `~/wa-connector/macos/daily-summary.sh status` shows the group and the last post. Stop it: `~/wa-connector/macos/daily-summary.sh off` (prints **Verified**).
 Its URL leaked? `~/wa-connector/macos/daily-summary.sh rotate`, then paste the new one (`~/wa-connector/macos/daily-summary.sh url`) into the *WhatsApp Daily* connector in claude.ai.
 
+## Links and videos
+Claude can summarise links, YouTube videos, and (once `~/wa-connector/macos/media-setup.sh on` is done) WhatsApp videos and voice notes,
+transcribed on this computer. `~/wa-connector/macos/media-setup.sh status` shows whether transcription is on; `off` switches it off.
+
 ## Token / connector URL
 The connector URL contains a secret. Treat it like a password and never paste it in a chat.
 Lost phone or suspect a leak? Run `macos/rotate-token.sh`. It only prints **Verified** after checking that the running connector rejects the old token. Then run `macos/connector-url.sh` (copies the new URL to the clipboard) and paste it into claude.ai → Settings → Connectors → "WhatsApp".

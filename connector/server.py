@@ -35,7 +35,7 @@ import sqlite3
 import sys
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -97,6 +97,13 @@ class Config:
     autopost_min_interval_h: float = 20.0
     autopost_max_chars: int = 3000
     state_dir: Optional[Path] = None
+    # Links and media (media.py). Links: on. Video/voice transcription: off
+    # until the optional dependencies are installed (media-setup).
+    links_enabled: bool = True
+    media_enabled: bool = False
+    whisper_model: str = "medium"
+    media_max_minutes: float = 20.0
+    media_chats: list[str] = field(default_factory=list)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -121,6 +128,11 @@ class Config:
             autopost_min_interval_h=float(os.environ.get("WA_AUTOPOST_MIN_INTERVAL_H") or 20),
             autopost_max_chars=int(os.environ.get("WA_AUTOPOST_MAX_CHARS") or 3000),
             state_dir=Path(os.path.expanduser(os.environ["WA_STATE_DIR"])) if os.environ.get("WA_STATE_DIR") else None,
+            links_enabled=env_bool("WA_LINKS", True),
+            media_enabled=env_bool("WA_MEDIA", False),
+            whisper_model=(os.environ.get("WA_WHISPER_MODEL") or "medium").strip(),
+            media_max_minutes=float(os.environ.get("WA_MEDIA_MAX_MINUTES") or 20),
+            media_chats=[c.strip() for c in os.environ.get("WA_MEDIA_CHATS", "").split(",") if c.strip()],
         )
 
 
@@ -493,12 +505,25 @@ def offload(fn):
     return wrapper
 
 
-def build_server(cfg: Config, store: Optional[Store] = None):
+def media_service(cfg: "Config", store: "Store"):
+    """The shared links/media service (media.py), or None if links are off."""
+    if not cfg.links_enabled:
+        return None
+    import daily
+    import media
+    return media.MediaService(store=store,
+                              cache=media.Cache(media.default_cache_dir(cfg.state_dir or daily.default_state_dir())),
+                              bridge_url=cfg.bridge_url, media_enabled=cfg.media_enabled,
+                              whisper_model=cfg.whisper_model, max_minutes=cfg.media_max_minutes)
+
+
+def build_server(cfg: Config, store: Optional[Store] = None, media_svc=None):
     from mcp.server.fastmcp import FastMCP
     from mcp.server.transport_security import TransportSecuritySettings
 
     store = store or Store(cfg.db_path)
     proposals = SendProposals()
+    media_svc = media_svc if media_svc is not None else media_service(cfg, store)
 
     allowed_hosts = ["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*"]
     if cfg.public_hostname:
@@ -594,6 +619,36 @@ def build_server(cfg: Config, store: Optional[Store] = None):
             "Sending is DISABLED. This connector is read-only. The owner can enable it "
             f"on the computer running it with: {OPS}sending{OPS_EXT} on"
         )
+
+    if media_svc is not None:
+        @mcp.tool()
+        @offload
+        def get_links_and_media(chat: str, days: int = 1):
+            """Links (web pages, YouTube) and WhatsApp videos / voice notes shared
+            in one chat, with their content: page text, YouTube captions, and for
+            videos and voice notes a local transcript (plus a few still frames for
+            videos). Use it to summarise what was shared. Slow items are processed
+            in the background: if some are "still processing", ask again later.
+
+            Args:
+                chat: chat name as the user says it, or a chat JID
+                days: how far back to look (default 1, max 14)
+            """
+            match, candidates = store.resolve_chat(chat)
+            if not match:
+                names = "; ".join(c["name"] for c in candidates) or "none"
+                return f"Chat '{chat}' not found exactly. Candidates: {names}"
+            since = datetime.now(timezone.utc) - timedelta(days=max(1, min(int(days), 14)))
+            return media_svc.digest(match["jid"], match["name"], since, wait_s=40)
+
+        if cfg.media_enabled:
+            @mcp.tool()
+            @offload
+            def media_status() -> str:
+                """Whether video / voice-note transcription is switched on, and the
+                model it uses. Read-only."""
+                return (f"Video and voice-note transcription is ON (local model: {cfg.whisper_model}; "
+                        f"videos longer than {cfg.media_max_minutes:g} minutes are skipped).")
 
     if cfg.autopost:
         @mcp.tool()
@@ -862,7 +917,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     cfg = Config.from_env()
     log.info("db=%s sending=%s", cfg.db_path, "ENABLED" if cfg.allow_send else "disabled")
 
-    mcp = build_server(cfg)
+    store = Store(cfg.db_path)
+    media_svc = media_service(cfg, store)
+    mcp = build_server(cfg, store, media_svc)
     if args.transport == "stdio":
         mcp.run(transport="stdio")
         return
@@ -913,8 +970,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     if cfg.autopost:
         # Separate, minimal endpoint for the unattended daily summary (daily.py).
         import daily
-        daily_mcp = daily.build_daily_server(cfg, Store(cfg.db_path),
-                                             daily.DailyState(cfg.state_dir or daily.default_state_dir()))
+        daily_mcp = daily.build_daily_server(cfg, store,
+                                             daily.DailyState(cfg.state_dir or daily.default_state_dir()),
+                                             media_svc=media_svc)
         daily_gate = TokenGate(daily_mcp.streamable_http_app(), cfg.daily_token, mcp_path=daily.DAILY_PATH,
                                allowed_ips=cfg.allowed_ips, rewrite_to=daily_mcp.settings.streamable_http_path)
         public = daily.PathRouter(public, daily_gate, daily_mcp)
@@ -927,6 +985,15 @@ def main(argv: Optional[list[str]] = None) -> None:
         local_match=admin.matches if admin else None,
         on_shutdown=cleanup_admin,
     )
+    if media_svc is not None:
+        # Keep the nightly group's links and media processed ahead of 12 AM.
+        import media
+        watch = list(dict.fromkeys(cfg.media_chats + ([cfg.autopost_chat] if cfg.autopost else [])))
+        if watch:
+            media.Prescanner(media_svc, watch).start()
+            log.info("pre-processing links/media for %d chat(s); transcription %s",
+                     len(watch), "ON" if cfg.media_enabled else "off")
+
     # One server on both sockets: one lifespan, one signal handler.
     server = uvicorn.Server(uvicorn.Config(
         app, log_level="warning", access_log=False,  # access log would record the token path

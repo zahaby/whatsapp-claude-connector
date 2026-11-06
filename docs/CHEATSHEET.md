@@ -38,6 +38,7 @@ powershell -ExecutionPolicy Bypass -File windows\start.ps1
 | Daily summary: on / off | `windows\daily-summary.ps1 on` · `windows\daily-summary.ps1 off` |
 | Daily summary: change the group | `windows\daily-summary.ps1 set "Group name"` |
 | Sending switch: on / off / status | `windows\sending.ps1 on` · `off` · `status` |
+| Video / voice-note transcription: on / off / status | `windows\media-setup.ps1 on` · `off` · `status` |
 | Re-link WhatsApp (QR code) | `windows\link-whatsapp.ps1`, scan, wait for "Connected", Ctrl-C, then `windows\start.ps1` |
 
 Commands that change something (`on`, `off`, `set`, `rotate`) must end with **Verified**.
@@ -71,6 +72,7 @@ git checkout main; git pull; powershell -ExecutionPolicy Bypass -File windows\st
 
 * Services start when you **log in**, not at boot: after an unattended restart (e.g. Windows Update at night) nothing runs until someone logs in.
 * The PC must be **on and awake** at 12 AM: Settings → System → Power → Sleep: **Never** when plugged in.
+* Links and videos: ask Claude *"what links and videos were shared in Family today?"*. Long videos take a few minutes to transcribe; if it says "still processing", ask again later.
 * Testing the daily summary by hand uses up the day (one post per 20 hours): run `reset-limit` afterwards so the 12 AM post still goes out.
 
 On a Mac the same commands are `macos/<script>.sh` (for example `macos/status.sh`, `macos/daily-summary.sh reset-limit`), run from `~/wa-connector`; logs are in `~/Library/Logs/wa-connector/`.

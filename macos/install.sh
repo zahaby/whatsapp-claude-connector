@@ -22,7 +22,9 @@ echo "==> Building bridge"
 chmod 700 "$UPSTREAM/whatsapp-bridge/store" 2>/dev/null || true
 
 echo "==> Connector virtualenv"
-( cd "$REPO/connector" && uv sync -q )
+# Keep the optional transcription packages if media-setup turned them on.
+if [ "$(env_get WA_MEDIA)" = true ]; then ( cd "$REPO/connector" && uv sync -q --extra media )
+else ( cd "$REPO/connector" && uv sync -q ); fi
 
 if [ ! -f "$ENV_FILE" ]; then
   cp "$REPO/connector/.env.example" "$ENV_FILE"

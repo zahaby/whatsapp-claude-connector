@@ -31,6 +31,10 @@ A scheduled Claude task posts one summary a night into one group, through its ow
 `windows\daily-summary.ps1 status` shows the group and the last post. Stop it: `windows\daily-summary.ps1 off` (prints **Verified**).
 Its URL leaked? `windows\daily-summary.ps1 rotate`, then paste the new one (`windows\daily-summary.ps1 url`) into the *WhatsApp Daily* connector in claude.ai.
 
+## Links and videos
+Claude can summarise links, YouTube videos, and (once `windows\media-setup.ps1 on` is done) WhatsApp videos and voice notes,
+transcribed on this computer. `windows\media-setup.ps1 status` shows whether transcription is on; `off` switches it off.
+
 ## Token / connector URL
 The URL contains a secret: treat it like a password. Leak or lost phone: `windows\rotate-token.ps1` (prints **Verified** only after the
 running connector rejects the old token), then `windows\connector-url.ps1` (copies the new URL) and paste it into claude.ai → Settings → Connectors.

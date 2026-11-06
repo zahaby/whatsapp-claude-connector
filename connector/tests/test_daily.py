@@ -82,6 +82,18 @@ def test_only_three_tools_and_no_chat_or_recipient_parameter(setup):
         assert not params & {"chat", "chat_jid", "jid", "recipient", "to", "group"}, (tool.name, params)
 
 
+def test_links_tool_also_has_no_chat_parameter(db, tmp_path, monkeypatch):
+    import media
+    from server import Store
+    monkeypatch.setenv("WHATSAPP_AUTOPOST", "true")
+    svc = media.MediaService(store=Store(db), cache=media.Cache(tmp_path / "c"), bridge_url="http://127.0.0.1:1/api")
+    t = tools(daily.build_daily_server(cfg(db), Store(db), daily.DailyState(tmp_path / "s"), media_svc=svc))
+    assert set(t) == {"get_group_transcript", "post_daily_summary", "daily_status", "get_group_links_and_media"}
+    for tool in t.values():
+        params = set(tool.inputSchema.get("properties", {}))
+        assert not params & {"chat", "chat_jid", "jid", "recipient", "to", "group"}, (tool.name, params)
+
+
 def test_transcript_is_only_the_configured_group(setup, db):
     from conftest import add_message
     from conftest import go_ts
@@ -280,7 +292,7 @@ def status_of(port, tls_dir, path):
 def test_daily_endpoint_serves_only_its_tools(daily_server):
     port, tls_dir, _ = daily_server
     assert mcp_tools(port, tls_dir, f"/daily/{DAILY_TOKEN}") == {
-        "get_group_transcript", "post_daily_summary", "daily_status"}
+        "get_group_transcript", "post_daily_summary", "daily_status", "get_group_links_and_media"}
     main = mcp_tools(port, tls_dir, f"/mcp/{TOKEN}")
     assert "autopost_status" in main and "post_daily_summary" not in main
 

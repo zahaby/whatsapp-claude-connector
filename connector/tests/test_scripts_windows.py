@@ -371,3 +371,23 @@ def test_daily_summary_url(env):
     env.write_env(MCP_PUBLIC_HOSTNAME="wa.example.com", MCP_DAILY_TOKEN="Q" * 43)
     r = env.run("daily-summary.ps1", "url", "-Print")
     assert r.returncode == 0 and r.stdout.strip() == "https://wa.example.com/daily/" + "Q" * 43
+
+
+# ---- video / voice-note transcription switch -----------------------------------
+
+def test_media_setup_on_off_verified(running):
+    running.vars["PYTHONPATH"] = os.pathsep.join([str(Path(__file__).resolve().parent / "fakes"), running.vars.get("PYTHONPATH", "")])
+    r = running.run("media-setup.ps1", "on")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Verified: the running connector has transcription ON" in r.stdout
+    assert running.get("WA_MEDIA") == "true"
+    r = running.run("media-setup.ps1", "off")
+    assert r.returncode == 0 and "transcription OFF" in r.stdout, r.stdout + r.stderr
+
+
+def test_reinstall_keeps_the_media_packages(env):
+    fake_upstream(env, (FIXTURES / "upstream_main.go.txt").read_text())
+    env.write_env(WA_MEDIA="true")
+    r = env.run("install.ps1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "uv sync -q --extra media" in (env.state / "calls").read_text()

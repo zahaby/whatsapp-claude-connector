@@ -50,6 +50,14 @@ Layered, so no single mistake exposes the chats:
    if manipulated: one odd summary in that group per day. Its token is separate from the main token, so
    rotating one never affects the other.
 
+   **Links and media.** Links in messages are fetched only on request (or for the nightly group) and only
+   from public addresses: anything resolving to a private, loopback, link-local or otherwise non-public
+   address is refused, every redirect is re-checked, the connection goes to the exact address that was
+   checked, and size (2 MB) and time (10 s) are capped. So a link in a message cannot make the connector probe
+   your router, local devices or its own internal services. Videos and voice notes are transcribed on this
+   computer; the downloaded file is deleted afterwards (only a file inside the bridge's per-chat media folder
+   is ever deleted). Transcripts and three small frames per video go to Claude, like the chat itself.
+
    Residual, stated plainly: the WhatsApp bridge's own internal API (`127.0.0.1:8080`, upstream code) is still
    plain HTTP. It carries no token, but if you switch sending on and a program had taken port 8080 while the
    bridge was stopped, the text of a message being sent could go to it instead. Sending is off by default.
