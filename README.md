@@ -65,6 +65,7 @@ windows/                     WINDOWS PLATFORM LAYER (Windows PowerShell 5.1, no 
 docs/HANDOVER.md             one-page restart / re-link note (macOS)
 docs/HANDOVER-windows.md     the same for Windows
 docs/SECURITY.md             answers: securing the endpoint; no access to messages
+docs/CHEATSHEET.md           one-page command cheat-sheet (restart, status, daily summary, URLs)
 ```
 
 ## Runbook (screen-share session; owner drives anything personal)
