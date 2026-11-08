@@ -45,9 +45,9 @@ Layered, so no single mistake exposes the chats:
    **Daily group summary (optional, off by default).** An unattended scheduled task cannot use the main
    connector: nobody approves its messages, and a message in the group could try to steer it into leaking
    other chats. So it gets a separate connector (`/daily/<its own token>`) that can read only the one
-   configured group and post only into that group, at most once per 20 hours, at most 3000 characters,
+   configured group and post only into that group, at most twice per 24 hours (60 minutes apart), at most 7000 characters,
    only when the group had messages, always labelled as automated, and only while switched on. Worst case
-   if manipulated: one odd summary in that group per day. Its token is separate from the main token, so
+   if manipulated: two odd summaries in that group per day. Its token is separate from the main token, so
    rotating one never affects the other.
 
    **Links and media.** Links in messages are fetched only on request (or for the nightly group) and only

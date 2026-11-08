@@ -94,8 +94,9 @@ class Config:
     autopost: bool = False
     autopost_chat: str = ""
     daily_token: str = ""
-    autopost_min_interval_h: float = 20.0
-    autopost_max_chars: int = 3000
+    autopost_max_per_day: int = 2
+    autopost_min_gap_minutes: float = 60.0
+    autopost_max_chars: int = 7000
     state_dir: Optional[Path] = None
     # Links and media (media.py). Links: on. Video/voice transcription: off
     # until the optional dependencies are installed (media-setup).
@@ -125,8 +126,9 @@ class Config:
             autopost=env_bool("WHATSAPP_AUTOPOST", False),
             autopost_chat=os.environ.get("WA_AUTOPOST_CHAT", "").strip(),
             daily_token=os.environ.get("MCP_DAILY_TOKEN", "").strip(),
-            autopost_min_interval_h=float(os.environ.get("WA_AUTOPOST_MIN_INTERVAL_H") or 20),
-            autopost_max_chars=int(os.environ.get("WA_AUTOPOST_MAX_CHARS") or 3000),
+            autopost_max_per_day=max(1, int(os.environ.get("WA_AUTOPOST_MAX_PER_DAY") or 2)),
+            autopost_min_gap_minutes=max(1.0, float(os.environ.get("WA_AUTOPOST_MIN_GAP_MINUTES") or 60)),
+            autopost_max_chars=int(os.environ.get("WA_AUTOPOST_MAX_CHARS") or 7000),
             state_dir=Path(os.path.expanduser(os.environ["WA_STATE_DIR"])) if os.environ.get("WA_STATE_DIR") else None,
             links_enabled=env_bool("WA_LINKS", True),
             media_enabled=env_bool("WA_MEDIA", False),

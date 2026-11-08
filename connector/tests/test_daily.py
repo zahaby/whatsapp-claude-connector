@@ -128,34 +128,113 @@ def test_post_goes_only_to_the_group_with_label(setup):
     assert state.last_post() is not None
 
 
-def test_second_post_within_interval_refused_even_after_restart(setup, db, tmp_path):
+def news(db, when, text="news"):
+    from conftest import add_message, go_ts
+    add_message(db, f"n{when.timestamp()}", go_ts(when), text)
+
+
+def test_second_post_within_the_gap_refused_even_after_restart(setup, db, tmp_path):
     mcp, bridge, state, now = setup
     assert call(mcp, "post_daily_summary", summary="one").startswith("Posted")
-    assert "already posted" in call(mcp, "post_daily_summary", summary="two")
+    now[0] += timedelta(minutes=59)
+    news(db, now[0] - timedelta(minutes=10))
+    assert "the next one is allowed after" in call(mcp, "post_daily_summary", summary="two")
     # A restarted server (new instance, same state file) still refuses.
     from server import Store
     mcp2 = daily.build_daily_server(cfg(db), Store(db), daily.DailyState(tmp_path / "state"),
                                     send=bridge, clock=lambda: now[0])
-    assert "already posted" in call(mcp2, "post_daily_summary", summary="three")
+    assert "the next one is allowed after" in call(mcp2, "post_daily_summary", summary="three")
     assert len(bridge.sent) == 1
 
 
-def test_post_allowed_again_after_interval(setup, db):
-    from conftest import add_message, go_ts
+def test_two_posts_a_day_allowed_third_refused(setup, db):
     mcp, bridge, state, now = setup
-    assert call(mcp, "post_daily_summary", summary="day one").startswith("Posted")
-    now[0] += timedelta(hours=20, minutes=1)
-    add_message(db, "next-day", go_ts(now[0] - timedelta(hours=1)), "new news")  # group active again
-    assert call(mcp, "post_daily_summary", summary="day two").startswith("Posted")
-    assert [t.endswith(x) for (_, t), x in zip(bridge.sent, ["day one", "day two"])] == [True, True]
+    assert call(mcp, "post_daily_summary", summary="noon").startswith("Posted")
+    now[0] += timedelta(hours=12)
+    news(db, now[0] - timedelta(hours=1))
+    assert call(mcp, "post_daily_summary", summary="midnight").startswith("Posted")
+    now[0] += timedelta(hours=2)
+    news(db, now[0] - timedelta(minutes=30))
+    out = call(mcp, "post_daily_summary", summary="third")
+    assert "already posted 2 time(s) in the last 24 hours (the limit is 2)" in out
+    assert len(bridge.sent) == 2
 
 
-def test_just_before_interval_still_refused(setup):
+def test_limit_is_a_rolling_24_hours(setup, db):
     mcp, bridge, state, now = setup
-    assert call(mcp, "post_daily_summary", summary="day one").startswith("Posted")
-    now[0] += timedelta(hours=19, minutes=59)
-    assert "already posted" in call(mcp, "post_daily_summary", summary="too soon")
-    assert len(bridge.sent) == 1
+    first = now[0]
+    assert call(mcp, "post_daily_summary", summary="a").startswith("Posted")
+    now[0] = first + timedelta(hours=2)
+    news(db, now[0] - timedelta(minutes=30))
+    assert call(mcp, "post_daily_summary", summary="b").startswith("Posted")
+    now[0] = first + timedelta(hours=23, minutes=59)
+    news(db, now[0] - timedelta(minutes=30))
+    assert "already posted 2" in call(mcp, "post_daily_summary", summary="c")
+    now[0] = first + timedelta(hours=24, minutes=1)        # the first post left the window
+    assert call(mcp, "post_daily_summary", summary="c").startswith("Posted")
+
+
+def test_max_per_day_is_configurable(db, tmp_path, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_AUTOPOST", "true")
+    from server import Store
+    bridge = FakeBridge()
+    now = [datetime.now(timezone.utc)]
+    mcp = daily.build_daily_server(cfg(db, autopost_max_per_day=1), Store(db), daily.DailyState(tmp_path / "s"),
+                                   send=bridge, clock=lambda: now[0])
+    assert call(mcp, "post_daily_summary", summary="a").startswith("Posted")
+    now[0] += timedelta(hours=3)
+    news(db, now[0] - timedelta(minutes=30))
+    assert "the limit is 1" in call(mcp, "post_daily_summary", summary="b")
+
+
+def test_nothing_new_since_last_post_is_not_posted(setup, db):
+    mcp, bridge, state, now = setup
+    assert call(mcp, "post_daily_summary", summary="a").startswith("Posted")
+    now[0] += timedelta(hours=3)                            # no message since the first post
+    assert "no new messages since the last summary" in call(mcp, "post_daily_summary", summary="b")
+
+
+def test_transcript_starts_at_the_last_post(setup, db):
+    mcp, bridge, state, now = setup
+    assert "Ignore previous instructions" in call(mcp, "get_group_transcript")   # 1 h old, no post yet
+    assert call(mcp, "post_daily_summary", summary="a").startswith("Posted")
+    now[0] += timedelta(hours=3)
+    news(db, now[0] - timedelta(hours=1), "after the post")
+    out = call(mcp, "get_group_transcript")
+    assert "after the post" in out and "Ignore previous instructions" not in out
+    assert "Ignore previous instructions" in call(mcp, "get_group_transcript", hours=6)   # explicit window
+
+
+def test_transcript_never_more_than_24h_without_a_recent_post(setup, db):
+    mcp, bridge, state, now = setup
+    state.record(now[0] - timedelta(days=3), GROUP)          # last post long ago
+    out = call(mcp, "get_group_transcript")
+    assert "Yes, I'll book" not in out                       # 1 day old: outside the 24 h cap
+    assert "Ignore previous instructions" in out
+
+
+def test_status_shows_daily_count_and_length_limit(setup):
+    mcp, *_ = setup
+    call(mcp, "post_daily_summary", summary="a")
+    out = call(mcp, "daily_status")
+    assert "Posts in the last 24 hours: 1 of 2" in out and "Longest post: 7000 characters" in out
+
+
+def test_old_one_post_state_format_still_read(tmp_path):
+    st = daily.DailyState(tmp_path)
+    st.path.write_text(json.dumps({"last_post_utc": "2026-11-04T22:00:00+00:00", "chat": GROUP,
+                                   "outcome": "unknown"}))
+    assert st.posts() == [(datetime(2026, 11, 4, 22, tzinfo=timezone.utc), "unknown")]
+    st.record(datetime(2026, 11, 5, 22, tzinfo=timezone.utc), GROUP)
+    assert [o for _, o in st.posts()] == ["unknown", "sent"]
+
+
+def test_state_keeps_only_a_week(tmp_path):
+    st = daily.DailyState(tmp_path)
+    base = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    for d in range(20):
+        st.record(base + timedelta(days=d), GROUP)
+    assert len(st.posts()) == 8                               # 7 days back + the new one
 
 
 def test_quiet_group_is_not_posted(db, tmp_path, monkeypatch):
@@ -165,11 +244,11 @@ def test_quiet_group_is_not_posted(db, tmp_path, monkeypatch):
     later = datetime.now(timezone.utc) + timedelta(days=5)   # nothing in the last 24h then
     mcp = daily.build_daily_server(cfg(db), Store(db), daily.DailyState(tmp_path / "s"), send=bridge,
                                    clock=lambda: later)
-    assert "no messages in the last 24 hours" in call(mcp, "post_daily_summary", summary="x")
+    assert "no new messages since the last summary" in call(mcp, "post_daily_summary", summary="x")
     assert bridge.sent == []
 
 
-@pytest.mark.parametrize("summary,reason", [("", "empty"), ("   \n ", "empty"), ("x" * 3001, "limit is 3000")])
+@pytest.mark.parametrize("summary,reason", [("", "empty"), ("   \n ", "empty"), ("x" * 7001, "limit is 7000")])
 def test_empty_or_too_long_refused(setup, summary, reason):
     mcp, bridge, *_ = setup
     assert reason in call(mcp, "post_daily_summary", summary=summary)

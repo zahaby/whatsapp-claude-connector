@@ -73,6 +73,6 @@ git checkout main; git pull; powershell -ExecutionPolicy Bypass -File windows\st
 * Services start when you **log in**, not at boot: after an unattended restart (e.g. Windows Update at night) nothing runs until someone logs in.
 * The PC must be **on and awake** at 12 AM: Settings → System → Power → Sleep: **Never** when plugged in.
 * Links and videos: ask Claude *"what links and videos were shared in Family today?"*. Long videos take a few minutes to transcribe; if it says "still processing", ask again later.
-* Testing the daily summary by hand uses up the day (one post per 20 hours): run `reset-limit` afterwards so the 12 AM post still goes out.
+* The daily summary posts at most twice per 24 hours (60 minutes apart), up to 7000 characters. A manual test uses one of the two: run `reset-limit` afterwards to keep both.
 
 On a Mac the same commands are `macos/<script>.sh` (for example `macos/status.sh`, `macos/daily-summary.sh reset-limit`), run from `~/wa-connector`; logs are in `~/Library/Logs/wa-connector/`.
