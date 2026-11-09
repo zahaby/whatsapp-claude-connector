@@ -91,7 +91,8 @@ class Env:
         return subprocess.run(
             [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", str(WIN / script), *args],
-            env={**self.vars, **env}, capture_output=True, text=True, timeout=180)
+            env={**self.vars, **env}, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=180)
 
     def status(self, token: str, cf_ip: str = "") -> int:
         """tools/list on the PUBLIC port, as a remote caller via the tunnel would."""
@@ -359,6 +360,21 @@ def test_daily_summary_set_on_off_verified(running):
     assert "autopost_status" in running.last_tools
     r = running.run("daily-summary.ps1", "off")
     assert r.returncode == 0 and "daily summary OFF" in r.stdout, r.stdout + r.stderr
+
+
+def test_daily_summary_shows_arabic_group_name(env):
+    """Non-Latin names must survive Python -> PowerShell -> console (was mojibake)."""
+    name = "عيلة الحاج محمد"
+    import sqlite3
+    with sqlite3.connect(env.db) as c:
+        c.execute("INSERT INTO chats VALUES (?,?,?)", ("1203639@g.us", name, "2026-01-01 00:00:00+00:00"))
+    env.write_env()
+    r = env.run("daily-summary.ps1", "set", name)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"Daily summary group: {name}" in r.stdout, r.stdout
+    assert env.get("WA_AUTOPOST_CHAT") == "1203639@g.us"
+    r = env.run("daily-summary.ps1", "status")
+    assert name in r.stdout, r.stdout + r.stderr
 
 
 def test_daily_summary_refuses_without_group(env):

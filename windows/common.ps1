@@ -12,6 +12,12 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+# Text between Python and PowerShell is UTF-8 both ways. Without this, Python
+# writes in the Windows ANSI code page and PowerShell reads it in the console's
+# DOS code page, so non-Latin chat names (e.g. Arabic) come out as garbage.
+$env:PYTHONIOENCODING = 'utf-8'
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+
 function Get-Setting([string]$Name, [string]$Default) {
     $v = [Environment]::GetEnvironmentVariable($Name)
     if ($v) { return $v }
