@@ -97,6 +97,7 @@ class Config:
     autopost_max_per_day: int = 2
     autopost_min_gap_minutes: float = 60.0
     autopost_max_chars: int = 7000
+    autopost_participation: bool = True
     state_dir: Optional[Path] = None
     # Links and media (media.py). Links: on. Video/voice transcription: off
     # until the optional dependencies are installed (media-setup).
@@ -129,6 +130,7 @@ class Config:
             autopost_max_per_day=max(1, int(os.environ.get("WA_AUTOPOST_MAX_PER_DAY") or 2)),
             autopost_min_gap_minutes=max(1.0, float(os.environ.get("WA_AUTOPOST_MIN_GAP_MINUTES") or 60)),
             autopost_max_chars=int(os.environ.get("WA_AUTOPOST_MAX_CHARS") or 7000),
+            autopost_participation=env_bool("WA_AUTOPOST_PARTICIPATION", True),
             state_dir=Path(os.path.expanduser(os.environ["WA_STATE_DIR"])) if os.environ.get("WA_STATE_DIR") else None,
             links_enabled=env_bool("WA_LINKS", True),
             media_enabled=env_bool("WA_MEDIA", False),
@@ -285,6 +287,23 @@ class Store:
             log.warning("contact names unavailable from session DB: %s", e)
         return contacts, lid_to_pn
 
+    def my_name(self) -> Optional[str]:
+        """The name this WhatsApp account set for itself (push name), from
+        the session DB, read-only. None if unknown."""
+        path = self.session_db_path
+        if not path or not path.exists():
+            return None
+        try:
+            conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+            try:
+                row = conn.execute("SELECT push_name FROM whatsmeow_device "
+                                   "WHERE push_name IS NOT NULL AND push_name != '' LIMIT 1").fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return None
+        return row[0].strip() if row and row[0].strip() else None
+
     def _names(self, conn: sqlite3.Connection) -> "Callable[[str], Optional[str]]":
         """A resolver: sender/chat user part (phone or LID) -> display name.
 
@@ -388,6 +407,7 @@ class Store:
                     "chat_jid": r["chat_jid"],
                     "chat_name": r["chat_name"],
                     "sender": "Me" if r["is_from_me"] else (name_of(sender_id) or sender_id or "Unknown"),
+                    "sender_id": "me" if r["is_from_me"] else sender_id,
                     "content": r["content"] or "",
                     "media_type": r["media_type"] or "",
                     "timestamp": ts,

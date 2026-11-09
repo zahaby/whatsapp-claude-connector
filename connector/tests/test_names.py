@@ -129,3 +129,17 @@ def test_older_library_without_lid_table_still_uses_contacts(db):
 def test_unreadable_session_db_never_breaks_summaries(db):
     db.with_name("whatsapp.db").write_bytes(b"not a database at all")
     assert senders(db)["Dinner Friday at 8?"] == "Mum"
+
+
+def test_my_name_from_session_db(db):
+    from server import Store
+    session = db.with_name("whatsapp.db")
+    assert Store(db).my_name() is None                     # no session DB
+    make_session_db(session)
+    assert Store(db).my_name() is None                     # no device table (older library)
+    c = sqlite3.connect(session)
+    c.execute("CREATE TABLE whatsmeow_device (jid TEXT PRIMARY KEY, push_name TEXT)")
+    c.execute("INSERT INTO whatsmeow_device VALUES ('me@s.whatsapp.net', ' زهبي ')")
+    c.commit()
+    c.close()
+    assert Store(db).my_name() == "زهبي"

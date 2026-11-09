@@ -124,7 +124,7 @@ def test_post_goes_only_to_the_group_with_label(setup):
     assert len(bridge.sent) == 1
     jid, text = bridge.sent[0]
     assert jid == GROUP
-    assert text.startswith(daily.PREFIX) and text.endswith("Dinner is Friday at 8.")
+    assert text.startswith(daily.PREFIX) and "\n\nDinner is Friday at 8.\n\n📊\n" in text
     assert state.last_post() is not None
 
 
@@ -522,3 +522,50 @@ def test_slow_bridge_does_not_freeze_the_server(db, tmp_path):
         proc.terminate()
         proc.wait(10)
         bridge.shutdown()
+
+
+# ---- participation percentages -------------------------------------------------
+
+def _msg(sender_id, sender, content="hi"):
+    return {"sender_id": sender_id, "sender": sender, "content": content}
+
+
+def test_participation_is_counted_per_member_and_adds_to_100():
+    msgs = ([_msg("1", "خولي")] * 3 + [_msg("2", "شريف")] * 2 + [_msg("3", "حسين")] * 5)
+    assert daily.participation(msgs) == "📊\nحسين 50%\nخولي 30%\nشريف 20%"
+    thirds = [_msg("1", "A"), _msg("2", "B"), _msg("3", "C")]
+    lines = daily.participation(thirds).splitlines()[1:]
+    assert sum(int(l.split()[-1].rstrip("%")) for l in lines) == 100
+
+
+def test_participation_same_name_different_people_kept_apart_and_tiny_share():
+    msgs = [_msg("1", "Ahmed")] * 300 + [_msg("2", "Ahmed")] * 99 + [_msg("3", "Rare")]
+    assert daily.participation(msgs) == "📊\nAhmed 75%\nAhmed 25%\nRare <1%"
+
+
+def test_participation_skips_earlier_summaries_and_names_me():
+    msgs = [_msg("me", "Me", daily.PREFIX + ", Mon ..."), _msg("me", "Me"), _msg("1", "Mum")]
+    assert daily.participation(msgs, "Zahaby") == "📊\nMum 50%\nZahaby 50%"
+    assert daily.participation(msgs) == "📊\nMe 50%\nMum 50%"
+    assert daily.participation([]) == ""
+
+
+def test_post_appends_participation_for_the_window(setup, db):
+    mcp, bridge, state, now = setup
+    news(db, now[0] - timedelta(minutes=30), "one more")    # sender 201000000001 = "Mum"
+    out = call(mcp, "post_daily_summary", summary="Dinner is Friday at 8.")
+    assert out.startswith("Posted")
+    text = bridge.sent[0][1]
+    # Last 24 hours: m3 (unknown 201000000099) and the new message from Mum; m1/m2 are older.
+    assert text.endswith("Dinner is Friday at 8.\n\n📊\n201000000099 50%\nMum 50%"), text
+
+
+def test_participation_can_be_switched_off(db, tmp_path, monkeypatch):
+    from server import Store
+    monkeypatch.setenv("WHATSAPP_AUTOPOST", "true")
+    bridge = FakeBridge()
+    mcp = daily.build_daily_server(cfg(db, autopost_participation=False), Store(db),
+                                   daily.DailyState(tmp_path / "s"), send=bridge)
+    assert call(mcp, "post_daily_summary", summary="Dinner.").startswith("Posted")
+    assert bridge.sent[0][1].endswith("\n\nDinner.")
+    assert "Participation percentages: OFF" in call(mcp, "daily_status")
