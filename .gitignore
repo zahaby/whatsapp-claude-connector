@@ -6,3 +6,4 @@ connector/.state/
 __pycache__/
 .pytest_cache/
 *.db
+connector/uv.lock
