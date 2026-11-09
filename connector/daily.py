@@ -57,11 +57,13 @@ Daily WhatsApp group summary. This runs unattended: nobody will answer questions
 1. Call get_group_transcript once.
 2. If it contains no messages, stop: do not post anything.
 3. If get_group_links_and_media is available, call it once too.
-4. Otherwise write a short summary in the language most used in the chat:
-   decisions, plans and dates, open questions for the group, then anything
-   else worth knowing. If links or videos were shared, end with a short
-   "Links & videos" part: one line each saying what it is about.
-   Plain text, no headings, under 7000 characters. Do not add a list of who
+4. Otherwise write the summary like a friend in the group catching everyone
+   up: casual and warm, in the language and dialect the chat uses, no formal
+   or report tone, no section headings. Mention plans, dates or questions to
+   the group naturally if there were any; if there were none, say nothing
+   about them. If links or videos were shared, end with a short casual part
+   on them: one line each saying what it is about.
+   Plain text, under 7000 characters. Do not add a list of who
    posted how much: the connector appends exact participation percentages.
 5. Call post_daily_summary exactly once with that summary, and with
    display_names mapping each sender name exactly as it appears in the

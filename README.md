@@ -176,10 +176,11 @@ If you set up the tunnel before this feature, run `setup-tunnel` again once so t
 Use only the "WhatsApp Daily" connector.
 1. Call get_group_transcript once, and get_group_links_and_media once.
 2. If the transcript contains no messages, stop and post nothing.
-3. Otherwise write a short summary in the language most used in the chat:
-   decisions, plans and dates, open questions for the group, then anything
-   else worth knowing. If links or videos were shared, end with a short
-   "Links & videos" part: one line each saying what it is about.
+3. Otherwise write the summary like a friend in the group catching everyone
+   up: casual and warm, in the language and dialect the chat uses, no formal
+   or report tone, no section headings. Mention plans, dates or questions
+   naturally if there were any; if none, say nothing about them. If links or
+   videos were shared, end with a short casual part: one line each.
    Plain text, under 7000 characters, nothing that is not in the transcript
    or the links/videos. No list of who posted how much: the connector adds
    exact participation percentages itself.
