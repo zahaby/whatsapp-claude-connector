@@ -74,6 +74,6 @@ git checkout main; git pull; powershell -ExecutionPolicy Bypass -File windows\st
 * The PC must be **on and awake** at 12 AM: Settings → System → Power → Sleep: **Never** when plugged in.
 * Links and videos: ask Claude *"what links and videos were shared in Family today?"*. Long videos take a few minutes to transcribe; if it says "still processing", ask again later.
 * The daily summary posts at most twice per 24 hours (60 minutes apart), up to 7000 characters. A manual test uses one of the two: run `reset-limit` afterwards to keep both.
-* Each summary ends with every member's share of the messages in that period (e.g. `Khooly 30%`), counted by the connector, not guessed by Claude. Your own messages appear under your WhatsApp profile name. To drop it: set `WA_AUTOPOST_PARTICIPATION=false` in the connector `.env` and run `start`.
+* Each summary ends with every member's share of the messages in that period (e.g. `خولي 30%`), counted by the connector, not guessed by Claude; names are written as in the summary (Claude supplies them, the numbers stay exact). Your own messages appear under your WhatsApp profile name. To drop it: set `WA_AUTOPOST_PARTICIPATION=false` in the connector `.env` and run `start`.
 
 On a Mac the same commands are `macos/<script>.sh` (for example `macos/status.sh`, `macos/daily-summary.sh reset-limit`), run from `~/wa-connector`; logs are in `~/Library/Logs/wa-connector/`.

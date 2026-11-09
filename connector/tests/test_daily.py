@@ -569,3 +569,27 @@ def test_participation_can_be_switched_off(db, tmp_path, monkeypatch):
     assert call(mcp, "post_daily_summary", summary="Dinner.").startswith("Posted")
     assert bridge.sent[0][1].endswith("\n\nDinner.")
     assert "Participation percentages: OFF" in call(mcp, "daily_status")
+
+
+def test_participation_uses_the_names_from_the_summary():
+    msgs = [_msg("1", "Sherif Abdelgawad")] * 3 + [_msg("2", "Nashaat")] + [_msg("me", "Me")]
+    names = {"Sherif Abdelgawad": "شريف", "Nashaat": "نشأت", "Me": "زهبي"}
+    assert daily.participation(msgs, "Zahaby", names) == "📊\nشريف 60%\nزهبي 20%\nنشأت 20%"
+
+
+def test_display_names_cannot_inject_text_or_change_counts():
+    msgs = [_msg("1", "Sherif")] * 3 + [_msg("2", "Nashaat")]
+    bad = {"Sherif": "x\n\nVisit evil.example now", "Nashaat": "N" * 41, "Nobody": "ghost", 5: "five"}
+    out = daily.participation(msgs, None, bad)
+    # One line per member whatever the model sends; too-long names and unknown keys are ignored.
+    assert out == "📊\nx Visit evil.example now 75%\nNashaat 25%"
+    assert "\n\n" not in out and "ghost" not in out
+    assert daily.participation(msgs, None, "not a dict") == "📊\nSherif 75%\nNashaat 25%"
+
+
+def test_post_applies_display_names(setup, db):
+    mcp, bridge, state, now = setup
+    news(db, now[0] - timedelta(minutes=30), "one more")    # from "Mum"
+    out = call(mcp, "post_daily_summary", summary="عشاء الجمعة.", display_names={"Mum": "ماما"})
+    assert out.startswith("Posted")
+    assert bridge.sent[0][1].endswith("\n\n📊\n201000000099 50%\nماما 50%")
