@@ -1,6 +1,10 @@
 # Template: macos/setup-tunnel.sh or windows\setup-tunnel.ps1 renders it to ~/.cloudflared/wa-connector.yml
 tunnel: __TUNNEL_ID__
 credentials-file: __HOME__/.cloudflared/__TUNNEL_ID__.json
+# HTTP/2 over TCP, not QUIC (UDP, the default). On networks that drop large UDP
+# packets, QUIC passes small replies but silently stalls bigger ones (tool
+# lists, transcripts), so Claude times out while the PC shows nothing wrong.
+protocol: http2
 ingress:
   # Only the MCP paths (/mcp, /daily) and the health check are forwarded; everything else 404s at the edge.
   - hostname: __HOSTNAME__
