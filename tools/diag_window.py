@@ -1,4 +1,4 @@
-"""Diagnose why a transcript reply does not arrive. Prints NO message text:
+r"""Diagnose why a transcript reply does not arrive. Prints NO message text:
 only times, lengths and which unusual characters a message contains.
 
   connector\.venv\Scripts\python.exe tools\diag_window.py [hours]
