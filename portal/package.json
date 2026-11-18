@@ -1,0 +1,17 @@
+{
+  "name": "school-desk",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "wrangler deploy --dry-run --outdir .build",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.10.0",
+    "postal-mime": "^4.2.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

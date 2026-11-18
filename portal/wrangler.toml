@@ -1,0 +1,32 @@
+name = "school-desk"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Serve the page from your own subdomain (the domain must be on this Cloudflare account).
+# Replace school.example.com with yours, e.g. school.<your-domain>.
+routes = [{ pattern = "school.example.com", custom_domain = true }]
+workers_dev = false
+
+[[kv_namespaces]]
+binding = "DIGESTS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"   # from: npx wrangler kv namespace create DIGESTS
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
+
+[vars]
+CHILD_NAME = "My child"          # shown on the page and given to Claude
+CLASS_NAME = ""                  # e.g. "Year 1E"
+MODEL = "claude-opus-5-5"
+EFFORT = "low"
+DAILY_QUESTION_LIMIT = "100"
+REQUIRE_DKIM = "true"
+
+# Secrets (set with `npx wrangler secret put <NAME>`, never commit them):
+#   ANTHROPIC_API_KEY  your Claude API key
+#   PORTAL_PATH        the random path in the link, at least 16 characters
+#   ALLOWED_FROM       address(es) the digest emails come from, comma-separated
+#   FORWARD_TO         where to pass on anything that is not a digest (a verified Email Routing destination)

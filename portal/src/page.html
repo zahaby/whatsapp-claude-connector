@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#1f4fd1">
+<title>__CHILD__'s School Desk</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700&family=Inter:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap">
+<style>
+/* One-screen chat: header with freshness stamp, scrolling conversation, composer pinned to the bottom. "Blue file" ink with a pencil-yellow accent. */
+:root {
+  --bg: #f5f7fb; --surface: #ffffff; --ink: #16223a; --muted: #5b6780; --line: #dde3ee;
+  --blue: #1f4fd1; --blue-soft: #e6edff; --pencil: #f2c230; --pencil-ink: #3a2c00; --warn: #b4540a;
+  --font-display: "Bricolage Grotesque", "Inter", system-ui, sans-serif;
+  --font-body: "Inter", "IBM Plex Sans Arabic", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-ar: "IBM Plex Sans Arabic", "Inter", system-ui, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1424; --surface: #161e33; --ink: #e8edf8; --muted: #9aa6c0; --line: #27324d;
+    --blue: #7ea2ff; --blue-soft: #1d2a4d; --pencil: #f2c230; --pencil-ink: #2a2000; --warn: #f0a35e;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+.app { height: 100%; display: flex; flex-direction: column; max-width: 760px; margin: 0 auto;
+  padding-top: env(safe-area-inset-top, 0px); }
+.pad { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+header { padding-block: 14px 12px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.mark { width: 40px; height: 40px; border-radius: 10px; background: var(--blue); color: #fff; display: grid; place-items: center;
+  font-family: var(--font-display); font-weight: 700; font-size: 18px; flex: none; position: relative; }
+.mark::after { content: ""; position: absolute; right: -3px; bottom: -3px; width: 12px; height: 12px; border-radius: 3px; background: var(--pencil); border: 2px solid var(--bg); }
+.titles { flex: 1; min-width: 0; }
+h1 { font-family: var(--font-display); font-size: 20px; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.stamp { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.stamp b { color: var(--ink); font-weight: 600; }
+.ghost { font: inherit; font-size: 13px; font-weight: 500; color: var(--blue); background: var(--blue-soft); border: 0; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+button:focus-visible, textarea:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+#latest { border-bottom: 1px solid var(--line); background: var(--surface); padding-block: 12px; max-height: 45vh; overflow: auto; }
+#latest pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--font-body); font-size: 13.5px; }
+
+main { flex: 1; overflow-y: auto; padding-block: 16px; display: flex; flex-direction: column; gap: 14px; }
+.intro { color: var(--muted); font-size: 14px; max-width: 60ch; margin: 0; }
+.intro strong { color: var(--ink); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font: inherit; font-size: 13.5px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 999px; padding: 7px 13px; cursor: pointer; text-align: start; }
+.chip:hover { border-color: var(--blue); }
+.chip[lang="ar"] { font-family: var(--font-ar); }
+
+.msg { max-width: 88%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; word-break: break-word; min-width: 0; }
+.me { align-self: flex-end; background: var(--blue); color: #fff; border-bottom-right-radius: 5px; }
+.bot { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+.bot a { color: var(--blue); }
+.bot.thinking { color: var(--muted); font-style: italic; }
+.bot.err { border-color: var(--warn); color: var(--warn); }
+
+footer { border-top: 1px solid var(--line); padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bg); }
+form { display: flex; gap: 8px; align-items: flex-end; margin: 0; }
+textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; max-height: 120px; line-height: 1.4; }
+.send { font: inherit; font-weight: 600; border: 0; border-radius: 12px; padding: 10px 16px; cursor: pointer; background: var(--pencil); color: var(--pencil-ink); }
+.send[disabled] { opacity: .5; cursor: default; }
+.note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+@media (prefers-reduced-motion: no-preference) { .msg { animation: in .18s ease-out; } @keyframes in { from { transform: translateY(4px); opacity: .6; } } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="pad">
+    <div class="mark" aria-hidden="true" id="mark">S</div>
+    <div class="titles">
+      <h1>__CHILD__'s School Desk</h1>
+      <div class="stamp" id="stamp">__CLASS__ · loading the latest school update…</div>
+    </div>
+    <button class="ghost" id="toggleLatest" type="button" hidden>Latest update</button>
+  </header>
+  <section id="latest" class="pad" hidden><pre id="latestText"></pre></section>
+
+  <main id="log" class="pad" aria-live="polite">
+    <p class="intro">Ask about <strong>homework, tests, things to bring, events</strong> or what was posted today. Answers come only from the school updates collected from Blended. English or Arabic both work.</p>
+    <div class="chips" id="chips">
+      <button class="chip" type="button">What's tomorrow's homework?</button>
+      <button class="chip" type="button">What did __CHILD__ take today?</button>
+      <button class="chip" type="button">What's due this week?</button>
+      <button class="chip" type="button">Does he need to bring or wear anything tomorrow?</button>
+      <button class="chip" type="button">What are this week's spelling words?</button>
+      <button class="chip" type="button" lang="ar" dir="rtl">إيه واجب بكرة؟</button>
+    </div>
+  </main>
+
+  <footer class="pad">
+    <form id="form">
+      <label for="q" class="sr">Question</label>
+      <textarea id="q" rows="1" dir="auto" maxlength="2000" placeholder="Ask about __CHILD__'s school day…"></textarea>
+      <button class="send" id="send" type="submit">Ask</button>
+    </form>
+    <div class="note">Check anything important against Blended or the teacher.</div>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const BASE = "__BASE__";
+  const CLASS = "__CLASS__";
+  const $ = id => document.getElementById(id);
+  const log = $("log"), form = $("form"), q = $("q"), send = $("send"), stamp = $("stamp");
+  const latestBtn = $("toggleLatest"), latest = $("latest"), latestText = $("latestText");
+  $("mark").textContent = (document.title.trim()[0] || "S").toUpperCase();
+
+  let turns = [];
+  let busy = false;
+  let ctl = null;
+  const isArabic = s => /[؀-ۿ]/.test(s);
+
+  function linkify(el, text) {
+    el.textContent = "";
+    const re = /(https?:\/\/[^\s)]+)/g; let last = 0, m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) el.append(text.slice(last, m.index));
+      const a = document.createElement("a");
+      a.href = m[1]; a.target = "_blank"; a.rel = "noopener noreferrer";
+      const shown = m[1].replace(/^https?:\/\//, "");
+      a.textContent = shown.length > 50 ? shown.slice(0, 48) + "…" : shown;
+      el.append(a); last = m.index + m[1].length;
+    }
+    if (last < text.length) el.append(text.slice(last));
+  }
+
+  function bubble(cls, text) {
+    const b = document.createElement("div");
+    b.className = "msg " + cls; b.dir = "auto";
+    if (text) linkify(b, text);
+    log.append(b); log.scrollTop = log.scrollHeight;
+    return b;
+  }
+
+  const ERRORS = {
+    no_data: "There are no school updates stored yet, so there's nothing to answer from.",
+    daily_limit: "Today's question limit is used up. It resets at midnight Cairo time.",
+    busy: "Too many questions at once. Wait a minute and try again.",
+    refused: "I can't answer that one. Try asking about homework, tests or events.",
+    config: "The portal isn't set up correctly (API key). Tell Mohamed.",
+    bad_request: "That question couldn't be sent. Try again.",
+  };
+
+  async function loadLatest() {
+    try {
+      const r = await fetch(`${BASE}/api/latest`, { cache: "no-store" });
+      const d = await r.json();
+      stamp.textContent = "";
+      if (CLASS) stamp.append(CLASS + " · ");
+      if (!d.label) { stamp.append("no school updates yet"); return; }
+      stamp.append("updated ");
+      const b = document.createElement("b"); b.textContent = d.label; stamp.append(b);
+      latestText.textContent = d.body || "";
+      latestBtn.hidden = false;
+    } catch {
+      stamp.textContent = (CLASS ? CLASS + " · " : "") + "couldn't load the latest update";
+    }
+  }
+
+  latestBtn.addEventListener("click", () => {
+    latest.hidden = !latest.hidden;
+    latestBtn.textContent = latest.hidden ? "Latest update" : "Hide update";
+  });
+
+  async function ask(text) {
+    text = text.trim();
+    if (!text || busy) return;
+    busy = true; send.textContent = "Stop";
+    bubble("me", text);
+    const out = bubble("bot thinking", isArabic(text) ? "بفكّر…" : "Thinking…");
+    turns.push({ role: "user", content: text });
+    if (turns.length > 12) turns = turns.slice(-12);
+    while (turns.length && turns[0].role !== "user") turns.shift();
+    ctl = new AbortController();
+    try {
+      const r = await fetch(`${BASE}/api/ask`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: turns }), signal: ctl.signal,
+      });
+      const d = await r.json().catch(() => ({}));
+      out.classList.remove("thinking");
+      if (!r.ok || !d.answer) throw new Error(d.error || "upstream");
+      linkify(out, d.answer);
+      turns.push({ role: "assistant", content: d.answer });
+    } catch (e) {
+      out.classList.remove("thinking");
+      turns.pop();
+      if (e.name === "AbortError") { out.textContent = "Stopped."; }
+      else { out.classList.add("err"); out.textContent = ERRORS[e.message] || "Couldn't get an answer just now. Try again."; }
+    } finally {
+      busy = false; ctl = null; send.textContent = "Ask"; log.scrollTop = log.scrollHeight;
+    }
+  }
+
+  form.addEventListener("submit", ev => {
+    ev.preventDefault();
+    if (busy) { ctl && ctl.abort(); return; }
+    const v = q.value; q.value = ""; autosize(); ask(v);
+  });
+  q.addEventListener("keydown", ev => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); form.requestSubmit(); } });
+  function autosize() { q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 120) + "px"; }
+  q.addEventListener("input", autosize);
+  $("chips").addEventListener("click", ev => { const c = ev.target.closest(".chip"); if (c) ask(c.textContent); });
+  loadLatest();
+})();
+</script>
+</body>
+</html>
