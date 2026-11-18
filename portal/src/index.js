@@ -101,7 +101,7 @@ async function ask(request, env) {
 
 export default {
   async fetch(request, env) {
-    const base = "/" + String(env.PORTAL_PATH || "").replace(/^\/+|\/+$/g, "");
+    const base = "/" + String(env.PORTAL_PATH || "").trim().replace(/^["']+|["']+$/g, "").replace(/^\/+|\/+$/g, "");
     if (base === "/" || base.length < 17) return notFound(); // refuse to run on a guessable path
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "");
