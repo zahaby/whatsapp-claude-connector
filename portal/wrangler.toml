@@ -18,11 +18,10 @@ globs = ["**/*.html"]
 fallthrough = true
 
 [vars]
-CHILD_NAME = "My child"          # shown on the page and given to Claude
-CLASS_NAME = ""                  # e.g. "Year 1E"
+CLASS_NAME = "Class"             # shown on the page and given to Claude, e.g. "Year 1E"
 MODEL = "claude-opus-5-5"
 EFFORT = "low"
-DAILY_QUESTION_LIMIT = "100"
+DAILY_QUESTION_LIMIT = "300"
 REQUIRE_DKIM = "true"
 
 # Secrets (set with `npx wrangler secret put <NAME>`, never commit them):
@@ -30,3 +29,4 @@ REQUIRE_DKIM = "true"
 #   PORTAL_PATH        the random path in the link, at least 16 characters
 #   ALLOWED_FROM       address(es) the digest emails come from, comma-separated
 #   FORWARD_TO         where to pass on anything that is not a digest (a verified Email Routing destination)
+#   REDACT_NAMES       names to hide from parents, comma-separated (child, parents; Latin and Arabic spellings)

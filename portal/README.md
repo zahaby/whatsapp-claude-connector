@@ -1,7 +1,8 @@
-# School Desk: no-login parents' chat for the Blended digests
+# School Desk: no-login chat for a class's parents
 
-A small Cloudflare Worker that lets parents ask questions like *"What's tomorrow's homework?"* or
-*"إيه واجب بكرة؟"* and get answers taken only from the daily Blended digest emails.
+A small Cloudflare Worker that lets the parents of one class ask questions like *"What's tomorrow's homework?"*
+or *"إيه واجب بكرة؟"* and get answers taken only from the daily Blended digest emails that one class parent
+receives. Share it only with the school's approval.
 
 ```
 Blended task ──email──► your Gmail ──filter: auto-forward──► digest@<your-domain>
@@ -18,9 +19,24 @@ Blended task ──email──► your Gmail ──filter: auto-forward──►
 - **Runs on Cloudflare**, not on your PC: it works while ZahabY-PC or the Mac is off.
 - **The scheduled task needs no change.** Gmail forwards the digest emails it already sends.
 - **Cost control.** Questions go to the Claude API on your key, capped at `DAILY_QUESTION_LIMIT`
-  per day (default 100). Also set a monthly spend limit on the key in the Claude Console.
-- Nothing personal is in this folder: the child's name, email addresses and the secret path are
-  deploy-time settings.
+  per day (default 300, for about 20 families). Also set a monthly spend limit on the key in the Claude Console.
+- Nothing personal is in this folder: names, email addresses and the secret path are deploy-time settings.
+
+## Privacy: the digests come from one family's account
+
+The digests are built from your own Blended account, so they can include things meant only for your
+family (your child's name, a part in the school show, an inbox message addressed to you). Three layers
+keep those out of other parents' answers:
+
+1. **Name redaction:** every name in `REDACT_NAMES` (your child, you, your spouse; Latin and Arabic
+   spellings) becomes `[name]` when a digest is stored, and again when it is read.
+2. **Class-wide answers only:** Claude is told to share homework, tests, events and materials for the
+   whole class, and to decline anything about one child or family.
+3. **No raw view:** parents never see a digest itself, only answers; the page shows just the time of the
+   latest update.
+
+This lowers the risk; it is not a guarantee. The safest fix is at the source: have the scheduled task
+leave personal items out of the email, or mark them so they can be dropped (see the end of this file).
 
 ## Files
 
@@ -54,7 +70,7 @@ limit on it).
    ```
 
 3. In `wrangler.toml`, replace `school.example.com` with your subdomain (e.g. `school.<your-domain>`) and set
-   `CHILD_NAME` / `CLASS_NAME` (e.g. `"Ali"` / `"Year 1E"`). Don't commit those values if the repo is public.
+   `CLASS_NAME` (e.g. `"Year 1E"`).
 
 4. Set the secrets. Each command prompts for the value, so nothing lands in your shell history.
 
@@ -83,6 +99,12 @@ limit on it).
 
    ```bash
    npx wrangler secret put FORWARD_TO
+   ```
+
+   `REDACT_NAMES` is the comma-separated list of names to hide, e.g. `Ali, Ali Mohamed El Zahaby, Mohamed, Riham, علي`:
+
+   ```bash
+   npx wrangler secret put REDACT_NAMES
    ```
 
 5. Deploy:
@@ -119,8 +141,11 @@ limit on it).
 - Settings in `wrangler.toml`: `MODEL` (default `claude-opus-5-5`), `EFFORT` (default `low`),
   `DAILY_QUESTION_LIMIT`. For lower cost, set `MODEL = "claude-haiku-5-5"`.
 
-## "What did he take today?"
+## Optional: scheduled-task edits
 
-Answers are only as detailed as the digests. To get day-by-day lesson content, add a short
+- **Personal items:** ask the task to put anything addressed to your family alone (personal inbox
+  messages, notes about your child) under a final "Private:" heading; the Worker drops that heading and
+  everything after it before storing. Or leave those items out of the email.
+- **"What did my child take today?"** Answers are only as detailed as the digests. To get day-by-day lesson content, add a short
 **"Taught this week"** section to the scheduled task's email (from the Arabic/Islamic weekly
 plans etc.). The Worker stores the whole email, and the chat already looks for that section.

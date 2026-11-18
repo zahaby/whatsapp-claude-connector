@@ -49,6 +49,9 @@ export function stripForwardHeader(text) {
 export function cleanBody(text) {
   let t = (text || "").replace(/\r\n/g, "\n");
   t = stripForwardHeader(t);
+  // A "Private" / "PRIVATE:" heading line marks family-only items: drop it and everything after.
+  const priv = /^[ \t*-]*private\b[^\n]*$/im.exec(t);
+  if (priv) t = t.slice(0, priv.index);
   t = unwrapLinks(t);
   t = t.replace(/\*/g, "");
   t = t.replace(/\n{3,}/g, "\n\n").trim();
@@ -62,6 +65,22 @@ export function toDigest(subject, text) {
   const body = cleanBody(text);
   if (!body) return null;
   return { id: meta.id, sentAt: meta.sentAt, label: meta.label, body, unreachable: meta.unreachable };
+}
+
+// Replace each listed name (comma-separated, any script) with "[name]". Longest first so
+// "Ali Mohamed" goes before "Ali"; whole words only, case-insensitive.
+export function redactNames(text, nameList) {
+  const names = (nameList || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(s => s.length >= 2)
+    .sort((a, b) => b.length - a.length);
+  let t = text || "";
+  for (const n of names) {
+    const esc = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    t = t.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, "giu"), "[name]");
+  }
+  return t;
 }
 
 export function senderAllowed(fromAddress, allowedList) {

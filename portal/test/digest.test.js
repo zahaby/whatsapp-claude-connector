@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSubject, toDigest, cleanBody, senderAllowed } from "../src/digest.js";
+import { parseSubject, toDigest, cleanBody, senderAllowed, redactNames } from "../src/digest.js";
 import { schoolDates, cleanTurns, stableSystem } from "../src/prompt.js";
 
 test("parses the digest subject into id, ordering time and label", () => {
@@ -64,12 +64,32 @@ test("cleanTurns keeps a valid user-ending history and rejects bad input", () =>
   assert.ok(kept.length <= 12);
 });
 
-test("system prompt lists the newest digest first and includes taught notes", () => {
-  const s = stableSystem({ childName: "Ali", className: "Year 1E", digests: [
+test("system prompt lists the newest digest first, includes taught notes and is class-wide", () => {
+  const s = stableSystem({ className: "Year 1E", digests: [
     { label: "Wed 18 Nov, 9 PM", body: "B2", taught: "Arabic – Sun: ف" },
     { label: "Wed 18 Nov, 6 PM", body: "B1" },
   ] });
   assert.ok(s.indexOf("Wed 18 Nov, 9 PM") < s.indexOf("Wed 18 Nov, 6 PM"));
   assert.match(s, /TAUGHT \/ COVERED[^]*Arabic – Sun: ف/);
-  assert.match(s, /son Ali \(Year 1E\)/);
+  assert.match(s, /parents of children in Year 1E/);
+  assert.match(s, /Share class-wide information only/);
+  assert.doesNotMatch(s, /\bson\b/);
+});
+
+test("redactNames hides names in any case and script, whole words only", () => {
+  const names = "Ali, Ali Mohamed El Zahaby, Riham, علي";
+  assert.equal(redactNames("Ali – Blended update", names), "[name] – Blended update");
+  assert.equal(redactNames("help ALI memorise his line", names), "help [name] memorise his line");
+  assert.equal(redactNames("Ali Mohamed El Zahaby, Year 1E", names), "[name], Year 1E");
+  assert.equal(redactNames("Ali  Mohamed\nEl Zahaby", names), "[name]");
+  assert.equal(redactNames("رسالة إلى علي اليوم", names), "رسالة إلى [name] اليوم");
+  assert.equal(redactNames("Alignment and Italia stay", names), "Alignment and Italia stay");
+  assert.equal(redactNames("Riham's note", names), "[name]'s note");
+  assert.equal(redactNames("nothing to hide", ""), "nothing to hide");
+});
+
+test("a Private heading and everything after it is dropped", () => {
+  assert.equal(cleanBody("TO DO\n- Spelling test\n\n*PRIVATE:*\n- Note about one child"), "TO DO\n- Spelling test");
+  assert.equal(cleanBody("Private\nsecret"), "");
+  assert.equal(cleanBody("Privately funded trip on Sun"), "Privately funded trip on Sun");
 });

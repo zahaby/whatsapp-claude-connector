@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#1f4fd1">
-<title>__CHILD__'s School Desk</title>
+<title>__CLASS__ School Desk</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700&family=Inter:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap">
 <style>
 /* One-screen chat: header with freshness stamp, scrolling conversation, composer pinned to the bottom. "Blue file" ink with a pencil-yellow accent. */
@@ -40,12 +40,9 @@ header { padding-block: 14px 12px; border-bottom: 1px solid var(--line); display
 h1 { font-family: var(--font-display); font-size: 20px; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
 .stamp { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .stamp b { color: var(--ink); font-weight: 600; }
-.ghost { font: inherit; font-size: 13px; font-weight: 500; color: var(--blue); background: var(--blue-soft); border: 0; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
 button:focus-visible, textarea:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 [hidden] { display: none !important; }
 
-#latest { border-bottom: 1px solid var(--line); background: var(--surface); padding-block: 12px; max-height: 45vh; overflow: auto; }
-#latest pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--font-body); font-size: 13.5px; }
 
 main { flex: 1; overflow-y: auto; padding-block: 16px; display: flex; flex-direction: column; gap: 14px; }
 .intro { color: var(--muted); font-size: 14px; max-width: 60ch; margin: 0; }
@@ -77,20 +74,18 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
   <header class="pad">
     <div class="mark" aria-hidden="true" id="mark">S</div>
     <div class="titles">
-      <h1>__CHILD__'s School Desk</h1>
-      <div class="stamp" id="stamp">__CLASS__ · loading the latest school update…</div>
+      <h1>__CLASS__ School Desk</h1>
+      <div class="stamp" id="stamp">Loading the latest school update…</div>
     </div>
-    <button class="ghost" id="toggleLatest" type="button" hidden>Latest update</button>
   </header>
-  <section id="latest" class="pad" hidden><pre id="latestText"></pre></section>
 
   <main id="log" class="pad" aria-live="polite">
-    <p class="intro">Ask about <strong>homework, tests, things to bring, events</strong> or what was posted today. Answers come only from the school updates collected from Blended. English or Arabic both work.</p>
+    <p class="intro">For __CLASS__ parents. Ask about <strong>homework, tests, things to bring, events</strong> or what the class is studying. Answers come only from the class updates posted on Blended. English or Arabic both work.</p>
     <div class="chips" id="chips">
       <button class="chip" type="button">What's tomorrow's homework?</button>
-      <button class="chip" type="button">What did __CHILD__ take today?</button>
+      <button class="chip" type="button">What did my child take today?</button>
       <button class="chip" type="button">What's due this week?</button>
-      <button class="chip" type="button">Does he need to bring or wear anything tomorrow?</button>
+      <button class="chip" type="button">Does my child need to bring or wear anything tomorrow?</button>
       <button class="chip" type="button">What are this week's spelling words?</button>
       <button class="chip" type="button" lang="ar" dir="rtl">إيه واجب بكرة؟</button>
     </div>
@@ -99,7 +94,7 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
   <footer class="pad">
     <form id="form">
       <label for="q" class="sr">Question</label>
-      <textarea id="q" rows="1" dir="auto" maxlength="2000" placeholder="Ask about __CHILD__'s school day…"></textarea>
+      <textarea id="q" rows="1" dir="auto" maxlength="2000" placeholder="Ask about homework, tests, events…"></textarea>
       <button class="send" id="send" type="submit">Ask</button>
     </form>
     <div class="note">Check anything important against Blended or the teacher.</div>
@@ -109,11 +104,9 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
 <script>
 (() => {
   const BASE = "__BASE__";
-  const CLASS = "__CLASS__";
   const $ = id => document.getElementById(id);
   const log = $("log"), form = $("form"), q = $("q"), send = $("send"), stamp = $("stamp");
-  const latestBtn = $("toggleLatest"), latest = $("latest"), latestText = $("latestText");
-  $("mark").textContent = (document.title.trim()[0] || "S").toUpperCase();
+  $("mark").textContent = ("__CLASS__".replace(/^(Year|Class)\s+/i, "").trim().slice(0, 2) || "S").toUpperCase();
 
   let turns = [];
   let busy = false;
@@ -147,7 +140,7 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
     daily_limit: "Today's question limit is used up. It resets at midnight Cairo time.",
     busy: "Too many questions at once. Wait a minute and try again.",
     refused: "I can't answer that one. Try asking about homework, tests or events.",
-    config: "The portal isn't set up correctly (API key). Tell Mohamed.",
+    config: "The portal isn't set up correctly. Please tell the class parent who shared this link.",
     bad_request: "That question couldn't be sent. Try again.",
   };
 
@@ -156,21 +149,13 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
       const r = await fetch(`${BASE}/api/latest`, { cache: "no-store" });
       const d = await r.json();
       stamp.textContent = "";
-      if (CLASS) stamp.append(CLASS + " · ");
-      if (!d.label) { stamp.append("no school updates yet"); return; }
-      stamp.append("updated ");
+      if (!d.label) { stamp.append("No school updates yet"); return; }
+      stamp.append("Updated ");
       const b = document.createElement("b"); b.textContent = d.label; stamp.append(b);
-      latestText.textContent = d.body || "";
-      latestBtn.hidden = false;
     } catch {
-      stamp.textContent = (CLASS ? CLASS + " · " : "") + "couldn't load the latest update";
+      stamp.textContent = "Couldn't load the latest update";
     }
   }
-
-  latestBtn.addEventListener("click", () => {
-    latest.hidden = !latest.hidden;
-    latestBtn.textContent = latest.hidden ? "Latest update" : "Hide update";
-  });
 
   async function ask(text) {
     text = text.trim();

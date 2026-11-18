@@ -1,16 +1,19 @@
-// School Desk: a no-login chat page where parents ask about the school digests.
+// School Desk: a no-login chat page where a class's parents ask about the school digests.
+// The digests come from one parent's account, so names listed in REDACT_NAMES are replaced
+// on the way in and out, the raw digest is never served, and the prompt shares class-wide
+// information only.
 //
 //   email()  Gmail auto-forwards each "<Child> – Blended update ..." email to an address on your
 //            domain; Cloudflare Email Routing hands it to this Worker, which stores it in KV.
 //   fetch()  GET  /<PORTAL_PATH>           the chat page
-//            GET  /<PORTAL_PATH>/api/latest the newest stored update (for the header and "Latest update")
+//            GET  /<PORTAL_PATH>/api/latest label of the newest stored update (freshness stamp only)
 //            POST /<PORTAL_PATH>/api/ask    {messages:[{role,content}...]} -> {answer, from}
 //            Everything else is a plain 404, so the site is invisible without the link.
 
 import Anthropic from "@anthropic-ai/sdk";
 import PostalMime from "postal-mime";
 import PAGE from "./page.html";
-import { toDigest, senderAllowed } from "./digest.js";
+import { toDigest, senderAllowed, redactNames } from "./digest.js";
 import { stableSystem, datesSystem, cleanTurns } from "./prompt.js";
 
 const KEEP_DAYS = 90;           // stored digests expire after this
@@ -40,7 +43,12 @@ async function latestDigests(env, n) {
   } while (cursor);
   const newest = keys.sort().reverse().slice(0, n);
   const docs = await Promise.all(newest.map(k => env.DIGESTS.get(k, "json")));
-  return docs.filter(Boolean);
+  // Redact again on read, so digests stored before a name was added to REDACT_NAMES are covered.
+  return docs.filter(Boolean).map(d => ({
+    ...d,
+    body: redactNames(d.body, env.REDACT_NAMES),
+    taught: d.taught ? redactNames(d.taught, env.REDACT_NAMES) : d.taught,
+  }));
 }
 
 // Approximate daily cap on questions (KV is eventually consistent, so it can overshoot slightly).
@@ -73,7 +81,7 @@ async function ask(request, env) {
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       system: [
-        { type: "text", text: stableSystem({ childName: env.CHILD_NAME, className: env.CLASS_NAME, digests }), cache_control: { type: "ephemeral" } },
+        { type: "text", text: stableSystem({ className: env.CLASS_NAME, digests }), cache_control: { type: "ephemeral" } },
         { type: "text", text: datesSystem() },
       ],
       messages: turns,
@@ -100,8 +108,7 @@ export default {
 
     if (path === base && request.method === "GET") {
       const html = PAGE
-        .replaceAll("__CHILD__", escapeHtml(env.CHILD_NAME || "My child"))
-        .replaceAll("__CLASS__", escapeHtml(env.CLASS_NAME || ""))
+        .replaceAll("__CLASS__", escapeHtml(env.CLASS_NAME || "Class"))
         .replaceAll("__BASE__", escapeHtml(base));
       return new Response(html, {
         headers: {
@@ -115,8 +122,9 @@ export default {
       });
     }
     if (path === `${base}/api/latest` && request.method === "GET") {
+      // Only the freshness label: the raw digest is never shown to parents.
       const [d] = await latestDigests(env, 1);
-      return json(d ? { label: d.label, body: d.body } : { label: null, body: null });
+      return json({ label: d ? d.label : null });
     }
     if (path === `${base}/api/ask` && request.method === "POST") return ask(request, env);
     return notFound();
@@ -133,6 +141,7 @@ export default {
     const digest = toDigest(mail.subject || "", text);
 
     if (digest && senderAllowed(fromHeader, env.ALLOWED_FROM) && dkimOk) {
+      digest.body = redactNames(digest.body, env.REDACT_NAMES);
       await env.DIGESTS.put(`d:${digest.sentAt}`, JSON.stringify(digest), { expirationTtl: KEEP_DAYS * 86400 });
       console.log(`stored digest ${digest.id}`);
       return;
