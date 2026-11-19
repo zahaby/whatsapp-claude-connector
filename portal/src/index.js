@@ -25,7 +25,11 @@ const DIGESTS_IN_PROMPT = 10;   // newest N go to Claude
 const SESSION_HOURS = 12;       // how long one passed human check lasts
 const COOKIE = "sd";
 
-const captchaOn = env => Boolean(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY);
+// Secrets pasted on Windows can carry stray spaces, quotes or line endings: normalise them.
+const clean = v => String(v || "").trim().replace(/^["']+|["']+$/g, "").trim();
+const siteKey = env => clean(env.TURNSTILE_SITE_KEY);
+const secretKey = env => clean(env.TURNSTILE_SECRET_KEY);
+const captchaOn = env => Boolean(siteKey(env) && secretKey(env));
 const cairoDay = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo" }).format(new Date());
 
 const notFound = () => new Response("Not found", { status: 404, headers: { "X-Robots-Tag": "noindex, nofollow" } });
@@ -69,16 +73,16 @@ async function underCap(env, key, limit) {
 }
 
 async function sessionId(request, env) {
-  return readSession(env.TURNSTILE_SECRET_KEY, cookieValue(request.headers.get("cookie"), COOKIE));
+  return readSession(secretKey(env), cookieValue(request.headers.get("cookie"), COOKIE));
 }
 
 async function verify(request, env, base) {
   if (!captchaOn(env)) return json({ verified: true });
   let payload;
   try { payload = await request.json(); } catch { return json({ error: "bad_request" }, 400); }
-  const ok = await verifyTurnstile(env.TURNSTILE_SECRET_KEY, payload && payload.token, request.headers.get("cf-connecting-ip"));
+  const ok = await verifyTurnstile(secretKey(env), payload && payload.token, request.headers.get("cf-connecting-ip"));
   if (!ok) return json({ error: "verify_failed" }, 403);
-  const value = await issueSession(env.TURNSTILE_SECRET_KEY, SESSION_HOURS * 3600);
+  const value = await issueSession(secretKey(env), SESSION_HOURS * 3600);
   const res = json({ verified: true });
   res.headers.append("set-cookie", `${COOKIE}=${value}; Path=${base}; Max-Age=${SESSION_HOURS * 3600}; HttpOnly; Secure; SameSite=Strict`);
   return res;
@@ -157,7 +161,7 @@ export default {
     }
     if (path === `${base}/api/session` && request.method === "GET") {
       if (!captchaOn(env)) return json({ verified: true });
-      return json({ verified: Boolean(await sessionId(request, env)), siteKey: env.TURNSTILE_SITE_KEY });
+      return json({ verified: Boolean(await sessionId(request, env)), siteKey: siteKey(env) });
     }
     if (path === `${base}/api/verify` && request.method === "POST") return verify(request, env, base);
     if (path === `${base}/api/ask` && request.method === "POST") return ask(request, env);

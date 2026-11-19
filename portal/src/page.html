@@ -194,6 +194,7 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
       return;
     }
     if (widget !== null) { ts.reset(widget); return; }
+    try {
     widget = ts.render("#turnstile", {
       sitekey: siteKey,
       theme: "auto",
@@ -202,6 +203,11 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
       "error-callback": () => { checkMsg.classList.add("err"); checkMsg.textContent = "The check didn't work. Reload the page and try again."; },
       "expired-callback": () => ts.reset(widget),
     });
+    } catch (err) {
+      widget = null;
+      checkMsg.classList.add("err");
+      checkMsg.textContent = "The security check couldn't start (" + (err && err.message ? err.message : "unknown error") + "). Please tell the class parent who shared this link.";
+    }
   }
 
   async function onToken(token) {
