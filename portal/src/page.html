@@ -96,7 +96,7 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
 
   <section class="check pad" id="check" hidden aria-live="polite">
     <p id="checkMsg">Quick check that you're a person. It keeps this free for the class and lasts 12 hours.</p>
-    <div id="turnstile"></div>
+    <div id="ts-box"></div>
   </section>
 
   <footer class="pad">
@@ -162,11 +162,14 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
   let tsReady = null;
   function turnstileReady() {
     if (!tsReady) tsReady = new Promise((resolve, reject) => {
-      if (window.turnstile) return resolve(window.turnstile);
+      // Check for the real library, not a DOM element that happens to share the name.
+      if (window.turnstile && typeof window.turnstile.render === "function") return resolve(window.turnstile);
       const s = document.createElement("script");
       s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
       s.async = true;
-      s.onload = () => resolve(window.turnstile);
+      s.onload = () => (window.turnstile && typeof window.turnstile.render === "function")
+        ? resolve(window.turnstile)
+        : (tsReady = null, reject(new Error("load")));
       s.onerror = () => { tsReady = null; reject(new Error("load")); };
       document.head.append(s);
     });
@@ -195,7 +198,7 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
     }
     if (widget !== null) { ts.reset(widget); return; }
     try {
-    widget = ts.render("#turnstile", {
+    widget = ts.render("#ts-box", {
       sitekey: siteKey,
       theme: "auto",
       language: "auto",
