@@ -22,6 +22,7 @@ CLASS_NAME = "Class"             # shown on the page and given to Claude, e.g. "
 MODEL = "claude-opus-5-5"
 EFFORT = "low"
 DAILY_QUESTION_LIMIT = "300"
+SESSION_QUESTION_LIMIT = "30"     # per visitor (per passed human check) per day
 REQUIRE_DKIM = "true"
 
 # Secrets (set with `npx wrangler secret put <NAME>`, never commit them):
@@ -30,3 +31,5 @@ REQUIRE_DKIM = "true"
 #   ALLOWED_FROM       address(es) the digest emails come from, comma-separated
 #   FORWARD_TO         where to pass on anything that is not a digest (a verified Email Routing destination)
 #   REDACT_NAMES       names to hide from parents, comma-separated (child, parents; Latin and Arabic spellings)
+#   TURNSTILE_SITE_KEY   Cloudflare Turnstile widget site key (human check before questions)
+#   TURNSTILE_SECRET_KEY Turnstile secret key; also signs the 12-hour visitor cookie

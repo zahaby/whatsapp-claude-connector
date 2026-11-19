@@ -65,6 +65,9 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
 .send { font: inherit; font-weight: 600; border: 0; border-radius: 12px; padding: 10px 16px; cursor: pointer; background: var(--pencil); color: var(--pencil-ink); }
 .send[disabled] { opacity: .5; cursor: default; }
 .note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.check { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding-block: 10px; border-top: 1px solid var(--line); background: var(--surface); }
+.check p { margin: 0; font-size: 13.5px; color: var(--muted); }
+.check .err { color: var(--warn); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 @media (prefers-reduced-motion: no-preference) { .msg { animation: in .18s ease-out; } @keyframes in { from { transform: translateY(4px); opacity: .6; } } }
 </style>
@@ -90,6 +93,11 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
       <button class="chip" type="button" lang="ar" dir="rtl">إيه واجب بكرة؟</button>
     </div>
   </main>
+
+  <section class="check pad" id="check" hidden aria-live="polite">
+    <p id="checkMsg">Quick check that you're a person. It keeps this free for the class and lasts 12 hours.</p>
+    <div id="turnstile"></div>
+  </section>
 
   <footer class="pad">
     <form id="form">
@@ -142,7 +150,71 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
     refused: "I can't answer that one. Try asking about homework, tests or events.",
     config: "The portal isn't set up correctly. Please tell the class parent who shared this link.",
     bad_request: "That question couldn't be sent. Try again.",
+    visitor_limit: "You've reached today's question limit for this device. It resets at midnight Cairo time.",
   };
+
+  // Human check (Cloudflare Turnstile). The server says whether this visitor already passed it.
+  const check = $("check"), checkMsg = $("checkMsg");
+  let verified = true;      // until the server says otherwise
+  let siteKey = null;
+  let widget = null;
+  let pending = null;       // a question waiting for the check to pass
+  let tsReady = null;
+  function turnstileReady() {
+    if (!tsReady) tsReady = new Promise((resolve, reject) => {
+      if (window.turnstile) return resolve(window.turnstile);
+      const s = document.createElement("script");
+      s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      s.async = true;
+      s.onload = () => resolve(window.turnstile);
+      s.onerror = () => { tsReady = null; reject(new Error("load")); };
+      document.head.append(s);
+    });
+    return tsReady;
+  }
+
+  async function loadSession() {
+    try {
+      const d = await (await fetch(`${BASE}/api/session`, { cache: "no-store" })).json();
+      verified = !!d.verified;
+      siteKey = d.siteKey || null;
+      if (!verified) showCheck();
+    } catch { /* the first question will tell us */ }
+  }
+
+  async function showCheck(message) {
+    check.hidden = false;
+    checkMsg.classList.toggle("err", !!message);
+    checkMsg.textContent = message || "Quick check that you're a person. It keeps this free for the class and lasts 12 hours.";
+    if (!siteKey) return loadSession();
+    let ts;
+    try { ts = await turnstileReady(); } catch {
+      checkMsg.classList.add("err");
+      checkMsg.textContent = "The security check couldn't load. Check your connection or turn off content blockers, then reload.";
+      return;
+    }
+    if (widget !== null) { ts.reset(widget); return; }
+    widget = ts.render("#turnstile", {
+      sitekey: siteKey,
+      theme: "auto",
+      language: "auto",
+      callback: onToken,
+      "error-callback": () => { checkMsg.classList.add("err"); checkMsg.textContent = "The check didn't work. Reload the page and try again."; },
+      "expired-callback": () => ts.reset(widget),
+    });
+  }
+
+  async function onToken(token) {
+    try {
+      const r = await fetch(`${BASE}/api/verify`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) });
+      if (!r.ok) throw new Error("verify");
+      verified = true;
+      check.hidden = true;
+      if (pending) { const p = pending; pending = null; ask(p); }
+    } catch {
+      showCheck("The check didn't go through. Please try once more.");
+    }
+  }
 
   async function loadLatest() {
     try {
@@ -160,6 +232,7 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
   async function ask(text) {
     text = text.trim();
     if (!text || busy) return;
+    if (!verified) { pending = text; showCheck(); return; }
     busy = true; send.textContent = "Stop";
     bubble("me", text);
     const out = bubble("bot thinking", isArabic(text) ? "بفكّر…" : "Thinking…");
@@ -174,6 +247,11 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
       });
       const d = await r.json().catch(() => ({}));
       out.classList.remove("thinking");
+      if (r.status === 401 && d.error === "verify") {
+        out.remove(); log.lastElementChild && log.lastElementChild.remove();
+        turns.pop(); verified = false; pending = text; showCheck();
+        return;
+      }
       if (!r.ok || !d.answer) throw new Error(d.error || "upstream");
       linkify(out, d.answer);
       turns.push({ role: "assistant", content: d.answer });
@@ -197,6 +275,7 @@ textarea { flex: 1; min-width: 0; resize: none; font: inherit; color: var(--ink)
   q.addEventListener("input", autosize);
   $("chips").addEventListener("click", ev => { const c = ev.target.closest(".chip"); if (c) ask(c.textContent); });
   loadLatest();
+  loadSession();
 })();
 </script>
 </body>

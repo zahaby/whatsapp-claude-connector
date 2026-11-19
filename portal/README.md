@@ -18,8 +18,11 @@ Blended task ──email──► your Gmail ──filter: auto-forward──►
   share it only with family. To revoke it, set a new `PORTAL_PATH` (step 4) and redeploy.
 - **Runs on Cloudflare**, not on your PC: it works while ZahabY-PC or the Mac is off.
 - **The scheduled task needs no change.** Gmail forwards the digest emails it already sends.
-- **Cost control.** Questions go to the Claude API on your key, capped at `DAILY_QUESTION_LIMIT`
-  per day (default 300, for about 20 families). Also set a monthly spend limit on the key in the Claude Console.
+- **Cost control.** Before the first question, each visitor passes a Cloudflare Turnstile check (usually
+  invisible) and gets a signed cookie valid for 12 hours; `/api/ask` refuses requests without it, so scripts
+  can't call Claude through the page. Each visitor gets `SESSION_QUESTION_LIMIT` questions a day (default 30),
+  and the whole class `DAILY_QUESTION_LIMIT` (default 300). Also set a monthly spend limit on the key in the
+  Claude Console.
 - Nothing personal is in this folder: names, email addresses and the secret path are deploy-time settings.
 
 ## Privacy: the digests come from one family's account
@@ -106,6 +109,19 @@ limit on it).
    ```bash
    npx wrangler secret put REDACT_NAMES
    ```
+
+   Human check (Cloudflare Turnstile, free): dashboard → **Turnstile** → **Add widget** → name `school-desk`,
+   hostname `school.<your-domain>`, mode **Managed** → **Create**. Copy the two keys it shows:
+
+   ```bash
+   npx wrangler secret put TURNSTILE_SITE_KEY
+   ```
+
+   ```bash
+   npx wrangler secret put TURNSTILE_SECRET_KEY
+   ```
+
+   Without both, the page works with no human check (the daily caps still apply).
 
 5. Deploy:
 
