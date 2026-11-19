@@ -1,11 +1,12 @@
-// Turn a forwarded "<Child> – Blended update <DD Mon YYYY> <6 PM|9 PM>" email into a stored digest.
+// Turn a "<Child> – Blended update <DD Mon YYYY> <H AM|PM>" email into a stored digest.
 // Pure functions only (no Worker APIs) so they run under `node --test`.
 
 const MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-// "Ali – Blended update 18 Nov 2026 9 PM" (also "Fwd: ...", "–" or "-", optional " – could not reach Blended").
-const SUBJECT_RE = /Blended update\s+(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{4})\s+(6|9)\s*PM/i;
+// "Ali – Blended update 18 Nov 2026 9 PM", "... 19 Nov 2026 7 AM" (also "Fwd: ...", "–" or "-",
+// optional " – could not reach Blended"). The run hour can be any hour, AM or PM.
+const SUBJECT_RE = /Blended update\s+(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{4})\s+(\d{1,2})\s*(AM|PM)\b/i;
 
 export function parseSubject(subject) {
   const m = SUBJECT_RE.exec(subject || "");
@@ -13,18 +14,20 @@ export function parseSubject(subject) {
   const day = Number(m[1]);
   const mon = m[2][0].toUpperCase() + m[2].slice(1, 3).toLowerCase();
   const year = Number(m[3]);
-  const run = m[4] === "6" ? "6pm" : "9pm";
-  if (!(mon in MONTHS)) return null;
+  const hour12 = Number(m[4]);
+  const ampm = m[5].toUpperCase();
+  if (!(mon in MONTHS) || hour12 < 1 || hour12 > 12) return null;
   const date = new Date(Date.UTC(year, MONTHS[mon], day));
   if (date.getUTCDate() !== day) return null;
-  // The task runs at ~5:50 PM / ~8:50 PM Cairo (UTC+2 in winter, UTC+3 in summer). The exact
-  // instant only orders the digests, so use UTC+2 and the run's nominal time.
-  const sentAt = new Date(Date.UTC(year, MONTHS[mon], day, run === "6pm" ? 15 : 18, 50)).toISOString();
+  const hour24 = (hour12 % 12) + (ampm === "PM" ? 12 : 0);
+  // A run labelled "6 PM" runs at ~5:50 PM Cairo (UTC+2 in winter, UTC+3 in summer). The exact
+  // instant only orders the digests, so use UTC+2 and ten minutes before the labelled hour.
+  const sentAt = new Date(Date.UTC(year, MONTHS[mon], day, hour24 - 2, -10)).toISOString();
   const iso = date.toISOString().slice(0, 10);
   return {
-    id: `${iso}-${run}`,
+    id: `${iso}-${hour12}${ampm.toLowerCase()}`,
     sentAt,
-    label: `${WEEKDAYS[date.getUTCDay()]} ${day} ${mon}, ${run === "6pm" ? "6 PM" : "9 PM"}`,
+    label: `${WEEKDAYS[date.getUTCDay()]} ${day} ${mon}, ${hour12} ${ampm}`,
     unreachable: /could not reach/i.test(subject),
   };
 }

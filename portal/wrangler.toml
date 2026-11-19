@@ -22,6 +22,7 @@ CLASS_NAME = "Class"             # shown on the page and given to Claude, e.g. "
 MODEL = "claude-opus-5-5"
 EFFORT = "low"
 DAILY_QUESTION_LIMIT = "300"
+UPDATE_TIMES = "about 7 AM, 3 PM, 6 PM and 9 PM"   # when the Blended task runs; told to Claude
 SESSION_QUESTION_LIMIT = "30"     # per visitor (per passed human check) per day
 REQUIRE_DKIM = "true"
 

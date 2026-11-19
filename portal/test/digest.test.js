@@ -10,6 +10,18 @@ test("parses the digest subject into id, ordering time and label", () => {
   assert.equal(parseSubject("Ali – Blended update 18 Nov 2026 6 PM – could not reach Blended").unreachable, true);
 });
 
+test("accepts any run hour, AM or PM, and orders runs within a day", () => {
+  const am = parseSubject("Ali – Blended update 19 Nov 2026 7 AM");
+  assert.deepEqual(am, { id: "2026-11-19-7am", sentAt: "2026-11-19T04:50:00.000Z", label: "Thu 19 Nov, 7 AM", unreachable: false });
+  const pm3 = parseSubject("Ali – Blended update 19 Nov 2026 3 PM");
+  assert.equal(pm3.id, "2026-11-19-3pm");
+  assert.equal(pm3.sentAt, "2026-11-19T12:50:00.000Z");
+  assert.ok(am.sentAt < pm3.sentAt && pm3.sentAt < parseSubject("x Blended update 19 Nov 2026 6 PM").sentAt);
+  assert.equal(parseSubject("x Blended update 19 Nov 2026 12 PM").sentAt, "2026-11-19T09:50:00.000Z");
+  assert.equal(parseSubject("x Blended update 19 Nov 2026 12 AM").sentAt, "2026-11-18T21:50:00.000Z");
+  assert.equal(parseSubject("x Blended update 19 Nov 2026 13 PM"), null);
+});
+
 test("rejects subjects that are not digests or have impossible dates", () => {
   assert.equal(parseSubject("Riham – period expected to start today"), null);
   assert.equal(parseSubject("Ali – Blended update 31 Nov 2026 6 PM"), null);
@@ -73,6 +85,8 @@ test("system prompt lists the newest digest first, includes taught notes and is 
   assert.match(s, /TAUGHT \/ COVERED[^]*Arabic – Sun: ف/);
   assert.match(s, /parents of children in Year 1E/);
   assert.match(s, /Share class-wide information only/);
+  assert.match(s, /runs at about 6 PM and 9 PM Cairo time/);
+  assert.match(stableSystem({ className: "Y", digests: [], updateTimes: "about 7 AM and 3 PM" }), /runs at about 7 AM and 3 PM/);
   assert.doesNotMatch(s, /\bson\b/);
 });
 

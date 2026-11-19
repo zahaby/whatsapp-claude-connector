@@ -114,7 +114,7 @@ async function ask(request, env) {
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       system: [
-        { type: "text", text: stableSystem({ className: env.CLASS_NAME, digests }), cache_control: { type: "ephemeral" } },
+        { type: "text", text: stableSystem({ className: env.CLASS_NAME, digests, updateTimes: env.UPDATE_TIMES }), cache_control: { type: "ephemeral" } },
         { type: "text", text: datesSystem() },
       ],
       messages: turns,
